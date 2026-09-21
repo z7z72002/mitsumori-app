@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>見積書作成アプリ｜武蔵塗料</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="app">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <img src="assets/logo.png" alt="musashi paint" class="brand-logo">
+      <div class="brand-title">見積書作成アプリ</div>
+    </div>
+    <nav class="nav">
+      <button class="nav-btn" data-view="quotes">📄 見積書一覧</button>
+      <button class="nav-btn" data-view="products">📦 特価/原価管理リスト</button>
+      <button class="nav-btn" data-view="linecodes">📈 指数・最低価格</button>
+      <button class="nav-btn" data-view="settings">⚙️ 設定</button>
+    </nav>
+    <div class="sidebar-footer">武蔵塗料株式会社</div>
+  </aside>
+
+  <main id="view-root" class="view-root"></main>
+</div>
+
+<!-- 印刷専用領域（通常は非表示。印刷/PDF時のみCSSで表示される） -->
+<div id="print-root"></div>
+
+<script src="lib/xlsx.full.min.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

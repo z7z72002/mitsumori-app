@@ -200,6 +200,8 @@ table.grid tbody tr:hover{ background:#fafbfc; }
 .item-edit-table textarea:focus{ background:#fff; border-color:var(--color-primary); outline:none; }
 .item-edit-table textarea.note-cell{ font-size:10.5px; line-height:1.3; min-height:30px; }
 .item-edit-table input:disabled, .item-edit-table textarea:disabled, .item-edit-table select:disabled{ color:var(--color-text); opacity:1; cursor:default; resize:none; }
+.item-edit-table td.ro-cell{ padding:6px; font-size:12.8px; white-space:pre-line; word-break:break-word; user-select:text; }
+.item-edit-table td.ro-cell.note-cell{ font-size:10.5px; line-height:1.3; }
 
 /* 単価候補ポップオーバー */
 .price-suggest-btn{ font-size:10.5px; color:var(--color-primary); background:none; border:1px dashed var(--color-primary); border-radius:4px; padding:2px 5px; margin-top:3px; width:100%; }

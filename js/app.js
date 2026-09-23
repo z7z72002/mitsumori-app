@@ -1572,14 +1572,14 @@ const ViewProducts = {
 
     const rows = shown.map(p=>`
       <tr data-id="${p.id}">
-        <td><textarea rows="2" data-f="code" disabled>${escapeHtml(p.code)}</textarea></td>
-        <td><textarea rows="2" data-f="name" disabled>${escapeHtml(p.name)}</textarea></td>
-        <td style="width:70px;"><input type="number" step="1" data-f="specialKg" value="${p.specialKg??""}" disabled></td>
-        <td style="width:110px;"><input type="number" step="1" data-f="specialPrice" value="${p.specialPrice??""}" disabled></td>
-        <td style="width:150px;"><textarea rows="2" data-f="client" disabled>${escapeHtml(p.client||"")}</textarea></td>
-        <td style="width:120px;"><input type="number" step="1" data-f="costPerKg" value="${p.costPerKg}" disabled></td>
-        <td style="width:110px;"><input type="number" step="1" data-f="standardPrice" value="${p.standardPrice??""}" disabled></td>
-        <td><textarea rows="2" class="note-cell" data-f="note" disabled>${escapeHtml(p.note||"")}</textarea></td>
+        <td class="ro-cell">${escapeHtml(p.code)}</td>
+        <td class="ro-cell">${escapeHtml(p.name)}</td>
+        <td class="ro-cell" style="width:70px;">${escapeHtml(p.specialKg??"")}</td>
+        <td class="ro-cell" style="width:110px;">${escapeHtml(String(p.specialPrice??""))}</td>
+        <td class="ro-cell" style="width:150px;">${escapeHtml(p.client||"")}</td>
+        <td class="ro-cell" style="width:120px;">${escapeHtml(String(p.costPerKg))}</td>
+        <td class="ro-cell" style="width:110px;">${escapeHtml(String(p.standardPrice??""))}</td>
+        <td class="ro-cell note-cell">${escapeHtml(p.note||"")}</td>
         <td class="col-actions"><button class="btn small primary copy-btn" data-act="copy-to-quote">コピー</button></td>
       </tr>`).join("");
 

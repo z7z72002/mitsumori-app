@@ -1140,6 +1140,81 @@ function parseExcelFile(file){
     reader.readAsArrayBuffer(file);
   });
 }
+/* ---------- 特価マスタ（元データ形式）ファイルの直接取込み ----------
+   得意先コード,得意先名,製品コード(品番-Kg),製品名,備考,特価,条件選択,特価1..5,条件1..5,更新日,登録日,
+   標準価格,改訂履歴1..5[日付/特価/備考],製品原価,... という、社内システムがそのまま出力する形式
+   （パスワード保護されていても、上のdecryptProtectedXlsxで復号して読む）。 */
+const MASTER_COL = { client:1, code:2, name:3, note:4, specialPrice:5, cond4:14, standardPrice:19, rev3Date:26, rev3Price:27, costPerKg:35 };
+function parseMasterExcelFile(file){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = async e => {
+      try{
+        let wb;
+        try{
+          wb = XLSX.read(e.target.result, { type:"array", cellDates:true });
+        }catch(err){
+          const msg = String((err && err.message) || err);
+          if(/password|encrypt/i.test(msg)){
+            const decrypted = await decryptProtectedXlsx(e.target.result);
+            wb = XLSX.read(decrypted, { type:"array", cellDates:true });
+          } else {
+            throw err;
+          }
+        }
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(sheet, { header:1, raw:true, defval:"" });
+        resolve(rows);
+      }catch(err){ reject(err); }
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsArrayBuffer(file);
+  });
+}
+function mapMasterRowsToProducts(rows){
+  const C = MASTER_COL;
+  const out = [];
+  for(let i=1;i<rows.length;i++){
+    const r = rows[i];
+    const codeRaw = String(r[C.code]||"").trim();
+    if(!codeRaw) continue;
+    let code = codeRaw, kg = "";
+    const m = codeRaw.match(/^(.+)-(\d+(\.\d+)?)$/);
+    if(m){ code = m[1]; kg = m[2]; }
+
+    const fNum = Number(r[C.specialPrice]) || 0;
+    const isZero = fNum === 0;
+    const existingNote = String(r[C.note]||"").trim();
+    let note = existingNote;
+    if(isZero){
+      const noteParts = [];
+      if(existingNote) noteParts.push(existingNote);
+      const oText = String(r[C.cond4]||"").trim();
+      if(oText) noteParts.push((oText.startsWith("【") && oText.endsWith("】")) ? oText : `【${oText}】`);
+      const abNum = Number(r[C.rev3Price]) || 0;
+      if(abNum) noteParts.push("¥" + abNum.toLocaleString("ja-JP"));
+      const aaVal = r[C.rev3Date];
+      let aaDate = null;
+      if(aaVal instanceof Date && !isNaN(aaVal)) aaDate = aaVal;
+      else if(typeof aaVal === "number" && aaVal > 0) aaDate = new Date(Math.round((aaVal-25569)*86400*1000));
+      if(aaDate) noteParts.push(`${aaDate.getFullYear()}/${aaDate.getMonth()+1}/${aaDate.getDate()}`);
+      note = noteParts.join(" / ");
+    }
+
+    out.push({
+      id: uid(),
+      code,
+      name: String(r[C.name]||"").trim(),
+      specialKg: kg !== "" ? (Number(kg)||0) : "",
+      specialPrice: fNum,
+      client: String(r[C.client]||"").trim(),
+      costPerKg: Number(r[C.costPerKg]) || 0,
+      standardPrice: Number(r[C.standardPrice]) || 0,
+      note
+    });
+  }
+  return out;
+}
 function buildProductsXlsx(products){
   const rows = [["品番","品名","Kg","特価","取引先","原価","標準価格","備考"]];
   for(const p of products) rows.push([p.code, p.name, p.specialKg??"", p.specialPrice??"", p.client||"", p.costPerKg, p.standardPrice??"", p.note||""]);
@@ -1607,6 +1682,7 @@ const ViewProducts = {
           <button class="btn" id="btn-export-csv">CSVで書き出す</button>
           <button class="btn" id="btn-export-xlsx">Excelで書き出す</button>
           <button class="btn primary" id="btn-import">CSV / Excelから取込む</button>
+          <button class="btn primary" id="btn-import-master">特価マスタファイルを取込む</button>
         </div>
       </div>
 
@@ -1619,9 +1695,11 @@ const ViewProducts = {
         <div class="format-help">
           取込用ファイルの列見出し： <code>品番</code>, <code>品名</code>, <code>Kg</code>, <code>特価</code>, <code>取引先</code>, <code>原価</code>, <code>標準価格</code>, <code>備考</code>（順不同・「Kg」「特価」「取引先」「標準価格」「備考」は省略可）。
           「<code>製品コード</code>」は品番、「<code>製品名</code>」は品名として自動的に扱われます。
-          既存の品番と一致する行は上書き、新しい品番は追加されます。
+          既存の品番と一致する行は上書き、新しい品番は追加されます。<br>
+          「特価マスタファイルを取込む」は、社内システムがそのまま出力する形式（パスワード保護されていても対応）を直接読み込み、品番とKgの分解、特価0円の品番への備考自動作成（次回価格見直し等）まで自動で行います。
         </div>
       </div>
+      <input type="file" id="master-file-import" accept=".xlsx,.xls" style="display:none;">
 
       ${truncated ? `<p class="hint" style="margin:0 0 8px;">検索結果 ${list.length.toLocaleString()} 件中、上位 ${this.DISPLAY_LIMIT} 件を表示しています。絞り込み条件を追加すると対象の行が見つかりやすくなります。</p>` : ""}
       <div class="card">
@@ -1758,6 +1836,29 @@ const ViewProducts = {
         toast("取込に失敗しました: " + err.message, true);
       }
       fileInput.value = "";
+    });
+
+    const masterFileInput = document.getElementById("master-file-import");
+    document.getElementById("btn-import-master").addEventListener("click", ()=>{
+      if(FS_ACCESS_SUPPORTED && !Store.productFileActive){
+        toast("先に「今のデータを新しいファイルに保存」または「既存の商品データファイルを開く」で商品データファイルと連携してから取込んでください（未連携のまま大量データを取込むと保存エラーになるおそれがあります）", true);
+        return;
+      }
+      masterFileInput.click();
+    });
+    masterFileInput.addEventListener("change", async ()=>{
+      const file = masterFileInput.files[0];
+      if(!file) return;
+      try{
+        const rows = await parseMasterExcelFile(file);
+        const imported = mapMasterRowsToProducts(rows);
+        if(!imported.length){ toast("取込めるデータが見つかりませんでした", true); return; }
+        this.showImportModal(imported);
+      }catch(err){
+        console.error(err);
+        toast("取込に失敗しました: " + err.message, true);
+      }
+      masterFileInput.value = "";
     });
 
     document.querySelectorAll("#view-root tbody tr[data-id]").forEach(tr=>{
@@ -3386,3 +3487,4 @@ const ViewEditor = {
    起動
    ========================================================== */
 document.addEventListener("DOMContentLoaded", ()=> App.init());
+

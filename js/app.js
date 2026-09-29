@@ -37,14 +37,6 @@ const DEFAULT_FREIGHT = [
   "3）　弊社入間工場へお引取り頂いた場合は、定額運賃の請求はございません"
 ];
 
-const SAMPLE_PRODUCTS = [
-  { code: "EC-GM62-1793M\n(SP26-10591)", name: "ｴｺﾒﾀﾙﾄﾞ\nﾌﾟﾛｼｵﾝｼﾙﾊﾞｰ KW-TD", costPerKg: 847, note: "※メタリック色" },
-  { code: "EC-GM62-1794\n(SP26-10592)", name: "ｴｺﾒﾀﾙﾄﾞ\n7416C ｵﾚﾝｼﾞｸﾘﾔｰ", costPerKg: 866, note: "※エナメル色" },
-  { code: "EC-GM62-1795\n(SP26-10595)", name: "ｴｺﾒﾀﾙﾄﾞ\n3935C ｲｴﾛｰｸﾘﾔｰ KW-TD", costPerKg: 874, note: "※メタリック色" },
-  { code: "EC-P79-36701\n(SP26-10593)", name: "ｴｺﾊｲｳﾚｯｸｽP\n2755C ﾈｲﾋﾞｰ KW-TD", costPerKg: 1394, note: "※メタリック色" },
-  { code: "SP26-10594\n(EC-P79-)", name: "ｴｺﾊｲｳﾚｯｸｽP\nﾌﾟﾛｼｵﾝﾏｯﾄｸﾘﾔｰ", costPerKg: 594, note: "※エナメル色" }
-];
-
 /* 新指数＆最低価格シートより: [ラインコード, ライン名, 新指数, 最低価格(エナメル16kg), 最低価格(メタリック16kg)] */
 const DEFAULT_LINE_CODES_RAW = [
   ["AB59-","MPC",0.8,21800,null],
@@ -154,7 +146,7 @@ const DEFAULT_LINE_CODES_RAW = [
   ["M773-","ﾜﾝﾀﾞｰﾄﾝM",0.75,23800,24900]
 ];
 
-function makeSampleQuote(products){
+function makeSampleQuote(){
   const today = new Date();
   return {
     id: uid(),
@@ -169,16 +161,16 @@ function makeSampleQuote(products){
     tradeTerms: "従来通り",
     validPeriod: "発行後6カ月間",
     items: [
-      { code: products[0].code, name: products[0].name, capacity: 16, unit: "Kg", unitPrice: 43600, note: "(国内缶)" },
-      { code: products[0].code, name: products[0].name, capacity: 4, unit: "Kg", unitPrice: 21400, note: "(国内缶)" },
-      { code: products[1].code, name: products[1].name, capacity: 16, unit: "Kg", unitPrice: 35600, note: "(国内缶)" },
-      { code: products[1].code, name: products[1].name, capacity: 4, unit: "Kg", unitPrice: 18400, note: "(国内缶)" },
-      { code: products[2].code, name: products[2].name, capacity: 16, unit: "Kg", unitPrice: 35800, note: "(国内缶)" },
-      { code: products[2].code, name: products[2].name, capacity: 4, unit: "Kg", unitPrice: 18500, note: "(国内缶)" },
-      { code: products[3].code, name: products[3].name, capacity: 16, unit: "Kg", unitPrice: 46900, note: "(国内缶)" },
-      { code: products[3].code, name: products[3].name, capacity: 4, unit: "Kg", unitPrice: 22600, note: "(国内缶)" },
-      { code: products[4].code, name: products[4].name, capacity: 16, unit: "Kg", unitPrice: 26600, note: "(国内缶)" },
-      { code: products[4].code, name: products[4].name, capacity: 4, unit: "Kg", unitPrice: 15000, note: "(国内缶)" }
+      { code: "EC-GM62-1793M\n(SP26-10591)", name: "ｴｺﾒﾀﾙﾄﾞ\nﾌﾟﾛｼｵﾝｼﾙﾊﾞｰ KW-TD", capacity: 16, unit: "Kg", unitPrice: 43600, note: "(国内缶)" },
+      { code: "EC-GM62-1793M\n(SP26-10591)", name: "ｴｺﾒﾀﾙﾄﾞ\nﾌﾟﾛｼｵﾝｼﾙﾊﾞｰ KW-TD", capacity: 4, unit: "Kg", unitPrice: 21400, note: "(国内缶)" },
+      { code: "EC-GM62-1794\n(SP26-10592)", name: "ｴｺﾒﾀﾙﾄﾞ\n7416C ｵﾚﾝｼﾞｸﾘﾔｰ", capacity: 16, unit: "Kg", unitPrice: 35600, note: "(国内缶)" },
+      { code: "EC-GM62-1794\n(SP26-10592)", name: "ｴｺﾒﾀﾙﾄﾞ\n7416C ｵﾚﾝｼﾞｸﾘﾔｰ", capacity: 4, unit: "Kg", unitPrice: 18400, note: "(国内缶)" },
+      { code: "EC-GM62-1795\n(SP26-10595)", name: "ｴｺﾒﾀﾙﾄﾞ\n3935C ｲｴﾛｰｸﾘﾔｰ KW-TD", capacity: 16, unit: "Kg", unitPrice: 35800, note: "(国内缶)" },
+      { code: "EC-GM62-1795\n(SP26-10595)", name: "ｴｺﾒﾀﾙﾄﾞ\n3935C ｲｴﾛｰｸﾘﾔｰ KW-TD", capacity: 4, unit: "Kg", unitPrice: 18500, note: "(国内缶)" },
+      { code: "EC-P79-36701\n(SP26-10593)", name: "ｴｺﾊｲｳﾚｯｸｽP\n2755C ﾈｲﾋﾞｰ KW-TD", capacity: 16, unit: "Kg", unitPrice: 46900, note: "(国内缶)" },
+      { code: "EC-P79-36701\n(SP26-10593)", name: "ｴｺﾊｲｳﾚｯｸｽP\n2755C ﾈｲﾋﾞｰ KW-TD", capacity: 4, unit: "Kg", unitPrice: 22600, note: "(国内缶)" },
+      { code: "SP26-10594\n(EC-P79-)", name: "ｴｺﾊｲｳﾚｯｸｽP\nﾌﾟﾛｼｵﾝﾏｯﾄｸﾘﾔｰ", capacity: 16, unit: "Kg", unitPrice: 26600, note: "(国内缶)" },
+      { code: "SP26-10594\n(EC-P79-)", name: "ｴｺﾊｲｳﾚｯｸｽP\nﾌﾟﾛｼｵﾝﾏｯﾄｸﾘﾔｰ", capacity: 4, unit: "Kg", unitPrice: 15000, note: "(国内缶)" }
     ],
     remarks: DEFAULT_REMARKS,
     toning: DEFAULT_TONING,
@@ -374,13 +366,12 @@ const DEALER_DATALIST_OPTIONS_HTML = DEFAULT_DEALERS_RAW.map(([code,name])=>
 ).join("");
 
 function defaultData(){
-  const products = SAMPLE_PRODUCTS.map(p => ({ id: uid(), ...p }));
   return {
     version: 1,
     settings: JSON.parse(JSON.stringify(DEFAULT_SETTINGS)),
-    products: products,
+    products: [],
     lineCodes: defaultLineCodes(),
-    quotes: [ makeSampleQuote(products) ],
+    quotes: [ makeSampleQuote() ],
     activeQuoteId: null,
     lastSealName: "",
     backups: []
@@ -3079,6 +3070,7 @@ const ViewEditor = {
     return true;
   },
 
+  PP_DISPLAY_LIMIT: 200,
   openProductPicker(q){
     const overlay = document.createElement("div");
     overlay.className = "modal-overlay";
@@ -3091,22 +3083,10 @@ const ViewEditor = {
             <input type="text" class="search-input" id="pp-search-code" style="flex:1;" placeholder="品番・品名でワード検索">
             <input type="text" class="search-input" id="pp-search-client" style="flex:1;" placeholder="取引先（会社名）でワード検索">
           </div>
+          <p class="hint" id="pp-trunc-note" style="margin:0 0 8px;"></p>
           <table class="grid" id="pp-table">
             <thead><tr><th>品番</th><th>品名</th><th>特価</th><th>取引先</th><th>原価(円/kg)</th><th>推奨指数</th><th></th></tr></thead>
-            <tbody>
-              ${products.map(p=>{
-                const lm = matchLineCode(p.code, Store.data.lineCodes);
-                return `
-                <tr data-id="${p.id}" data-search-codename="${escapeHtml(normalizeForSearch(p.code+" "+p.name))}" data-search-client="${escapeHtml(normalizeForSearch(p.client||""))}">
-                  <td style="white-space:pre-line;">${escapeHtml(p.code)}</td>
-                  <td style="white-space:pre-line;">${escapeHtml(p.name)}</td>
-                  <td>${hasRecordedPrice(p.specialPrice) ? yen(p.specialPrice) + (p.specialKg!==undefined && p.specialKg!==""? `（${escapeHtml(String(p.specialKg))}kg）`:"") : "-"}</td>
-                  <td>${p.client ? escapeHtml(p.client) : ""}</td>
-                  <td>${yen(p.costPerKg)}</td>
-                  <td>${lm ? `${lm.newIndex}<div class="hint" style="margin:0;">${escapeHtml(lm.name)}</div>` : "-"}</td>
-                  <td><button class="btn small primary" data-act="pick">追加</button></td>
-                </tr>`;}).join("")}
-            </tbody>
+            <tbody></tbody>
           </table>
           ${!products.length? `<p class="hint">原価リストが空です。先に「特価/原価管理リスト」で製品を登録してください。</p>`:""}
         </div>
@@ -3116,21 +3096,45 @@ const ViewEditor = {
     const close = ()=> overlay.remove();
     overlay.querySelector(".modal-close").addEventListener("click", close);
     overlay.querySelector("#pp-cancel").addEventListener("click", close);
-    let ppSearchTimer = null;
-    const applyPpFilter = ()=>{
+
+    const tbody = overlay.querySelector("#pp-table tbody");
+    const truncNote = overlay.querySelector("#pp-trunc-note");
+    const renderPpRows = ()=>{
       const t1 = normalizeForSearch(document.getElementById("pp-search-code").value.trim());
       const t2 = normalizeForSearch(document.getElementById("pp-search-client").value.trim());
-      overlay.querySelectorAll("#pp-table tbody tr").forEach(tr=>{
-        const match1 = !t1 || tr.dataset.searchCodename.includes(t1);
-        const match2 = !t2 || tr.dataset.searchClient.includes(t2);
-        tr.style.display = (match1 && match2) ? "" : "none";
+      const filtered = products.filter(p=>{
+        const match1 = !t1 || normalizeForSearch(p.code+" "+p.name).includes(t1);
+        const match2 = !t2 || normalizeForSearch(p.client||"").includes(t2);
+        return match1 && match2;
       });
+      const shown = filtered.slice(0, this.PP_DISPLAY_LIMIT);
+      tbody.innerHTML = shown.map(p=>{
+        const lm = matchLineCode(p.code, Store.data.lineCodes);
+        return `
+        <tr data-id="${p.id}">
+          <td style="white-space:pre-line;">${escapeHtml(p.code)}</td>
+          <td style="white-space:pre-line;">${escapeHtml(p.name)}</td>
+          <td>${hasRecordedPrice(p.specialPrice) ? yen(p.specialPrice) + (p.specialKg!==undefined && p.specialKg!==""? `（${escapeHtml(String(p.specialKg))}kg）`:"") : "-"}</td>
+          <td>${p.client ? escapeHtml(p.client) : ""}</td>
+          <td>${yen(p.costPerKg)}</td>
+          <td>${lm ? `${lm.newIndex}<div class="hint" style="margin:0;">${escapeHtml(lm.name)}</div>` : "-"}</td>
+          <td><button class="btn small primary" data-act="pick">追加</button></td>
+        </tr>`;
+      }).join("") || (products.length ? `<tr><td colspan="7" style="text-align:center;color:#888;padding:20px;">該当する製品がありません</td></tr>` : "");
+      truncNote.textContent = filtered.length > this.PP_DISPLAY_LIMIT
+        ? `検索結果 ${filtered.length.toLocaleString()} 件中、上位 ${this.PP_DISPLAY_LIMIT} 件を表示しています。品番や取引先で絞り込むと見つけやすくなります。`
+        : "";
     };
-    const scheduleFilter = ()=>{ clearTimeout(ppSearchTimer); ppSearchTimer = setTimeout(applyPpFilter, 200); };
+    renderPpRows();
+
+    let ppSearchTimer = null;
+    const scheduleFilter = ()=>{ clearTimeout(ppSearchTimer); ppSearchTimer = setTimeout(renderPpRows, 200); };
     overlay.querySelector("#pp-search-code").addEventListener("input", scheduleFilter);
     overlay.querySelector("#pp-search-client").addEventListener("input", scheduleFilter);
-    overlay.querySelectorAll('[data-act="pick"]').forEach(btn=>{
-      btn.addEventListener("click", ()=>{
+    overlay.querySelector("#pp-table").addEventListener("click", (e)=>{
+      const btn = e.target.closest('[data-act="pick"]');
+      if(!btn) return;
+      {
         const tr = btn.closest("tr");
         const p = products.find(x=>x.id===tr.dataset.id);
         const s = Store.data.settings;
@@ -3221,7 +3225,7 @@ const ViewEditor = {
           App.render();
           toast("特価が未登録のため単価が0円になっています（赤色のセルをご確認ください）", true);
         }
-      });
+      }
     });
   },
 

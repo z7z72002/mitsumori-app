@@ -569,7 +569,23 @@ const Store = {
     try{
       const payload = this.productFileActive ? Object.assign({}, this.data, { products: [] }) : this.data;
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-    }catch(e){ console.error("save failed", e); toast("保存に失敗しました（ブラウザのストレージ上限の可能性があります）", true); }
+    }catch(e){
+      console.error("save failed", e);
+      // 商品データが大きすぎてlocalStorageの上限を超えた場合、商品データを除いて
+      // 再保存する（見積書・設定だけは確実に守る）。商品データ自体はファイル連携が必要な状態のまま。
+      if(!this.productFileActive && this.data.products.length > 0){
+        try{
+          const fallbackPayload = Object.assign({}, this.data, { products: [] });
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(fallbackPayload));
+          toast("商品データの件数が多いためブラウザには保存できませんでした（見積書・設定は保存済みです）。「特価/原価管理リスト」で商品データファイルと連携してください", true);
+        }catch(e2){
+          console.error("fallback save failed", e2);
+          toast("保存に失敗しました（ブラウザのストレージ上限の可能性があります）", true);
+        }
+      } else {
+        toast("保存に失敗しました（ブラウザのストレージ上限の可能性があります）", true);
+      }
+    }
   }
 };
 

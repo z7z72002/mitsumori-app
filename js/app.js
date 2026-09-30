@@ -805,6 +805,42 @@ async function ensureDirPermission(handle){
   return false;
 }
 
+/* ---------- 自動取込フォルダ（ここに置かれた見積書JSONを起動時などに自動でマージする）---------- */
+const AUTO_IMPORT_HANDLE_KEY = "quotesAutoImportFolder";
+const AUTO_IMPORT_DONE_DIR = "取込済み";
+async function saveAutoImportHandle(handle){
+  const db = await openHandleDb();
+  return new Promise((resolve, reject)=>{
+    const tx = db.transaction(DIR_HANDLE_STORE, "readwrite");
+    tx.objectStore(DIR_HANDLE_STORE).put(handle, AUTO_IMPORT_HANDLE_KEY);
+    tx.oncomplete = ()=> resolve();
+    tx.onerror = ()=> reject(tx.error);
+  });
+}
+async function loadAutoImportHandle(){
+  const db = await openHandleDb();
+  return new Promise((resolve, reject)=>{
+    const tx = db.transaction(DIR_HANDLE_STORE, "readonly");
+    const req = tx.objectStore(DIR_HANDLE_STORE).get(AUTO_IMPORT_HANDLE_KEY);
+    req.onsuccess = ()=> resolve(req.result || null);
+    req.onerror = ()=> reject(req.error);
+  });
+}
+// 取込み済みのファイルを「取込済み」サブフォルダへ移す（同名があっても上書きしないよう日時を付ける）
+async function moveToDoneDir(dirHandle, fileHandle, text){
+  const done = await dirHandle.getDirectoryHandle(AUTO_IMPORT_DONE_DIR, { create: true });
+  const stamp = new Date().toISOString().replace(/[-:]/g,"").replace("T","_").slice(0,15);
+  const newName = `${stamp}_${fileHandle.name}`;
+  if(typeof fileHandle.move === "function"){
+    try{ await fileHandle.move(done, newName); return; }catch(e){ /* 下のコピー方式で再試行 */ }
+  }
+  const dst = await done.getFileHandle(newName, { create: true });
+  const w = await dst.createWritable();
+  await w.write(text);
+  await w.close();
+  await dirHandle.removeEntry(fileHandle.name);
+}
+
 /* ---------- 商品データファイル（特価/原価管理リストの永続化先、File System Access API）---------- */
 const PRODUCT_FILE_HANDLE_KEY = "productDataFile";
 async function saveProductFileHandle(handle){
@@ -1250,6 +1286,24 @@ const App = {
         ViewQuotes.folderHandle = handle;
         if(this.view === "quotes") this.render();
       }).catch(()=>{});
+      // 自動取込フォルダ：許可が残っていれば即取込み。残っていなければ最初のクリック時に取込む。
+      loadAutoImportHandle().then(async handle=>{
+        if(!handle) return;
+        ViewQuotes.autoImportHandle = handle;
+        if(await queryFilePermissionSilent(handle)){
+          await this.runAutoImport({ silentIfNone: true });
+        } else {
+          ViewQuotes.autoImportPending = true;
+          this.armAutoImport();
+        }
+        if(this.view === "quotes") this.render();
+      }).catch(()=>{});
+      // アプリを開いたまま別の作業から戻ってきた時にも、新しく置かれたファイルを取込む
+      document.addEventListener("visibilitychange", async ()=>{
+        const handle = ViewQuotes.autoImportHandle;
+        if(document.visibilityState !== "visible" || !handle) return;
+        if(await queryFilePermissionSilent(handle)) this.runAutoImport({ silentIfNone: true });
+      });
       // 商品データファイルの自動復元はベストエフォート：復元できなくても「未連携」のまま普通に使える
       loadProductFileHandle().then(async handle=>{
         if(!handle) return;
@@ -1303,6 +1357,74 @@ const App = {
     document.addEventListener("keydown", tryReconnect, true);
   },
 
+  armAutoImport(){
+    if(this._autoImportArmed) return;
+    this._autoImportArmed = true;
+    const tryImport = async ()=>{
+      document.removeEventListener("click", tryImport, true);
+      document.removeEventListener("keydown", tryImport, true);
+      this._autoImportArmed = false;
+      const handle = ViewQuotes.autoImportHandle;
+      if(!handle) return;
+      try{
+        if(!(await ensureDirPermission(handle))){
+          toast("自動取込フォルダへのアクセスが許可されませんでした。「今すぐ取込む」ボタンから再度お試しください", true);
+          return;
+        }
+        ViewQuotes.autoImportPending = false;
+        await this.runAutoImport({ silentIfNone: true });
+        if(this.view === "quotes") this.render();
+      }catch(e){
+        toast("自動取込に失敗しました：" + e.message, true);
+      }
+    };
+    document.addEventListener("click", tryImport, true);
+    document.addEventListener("keydown", tryImport, true);
+  },
+
+  // 自動取込フォルダ直下の *.json を読み込み、見積書一覧にマージして「取込済み」へ移す。
+  // 同じIDの見積書がアプリ側で後から更新されている場合は、アプリ側を優先して上書きしない。
+  async runAutoImport(opts){
+    const handle = ViewQuotes.autoImportHandle;
+    if(!handle || this._autoImportRunning) return;
+    this._autoImportRunning = true;
+    let added=0, updated=0, skipped=0, failed=0;
+    try{
+      const files = [];
+      for await (const entry of handle.values()){
+        if(entry.kind === "file" && /\.json$/i.test(entry.name)) files.push(entry);
+      }
+      for(const fh of files){
+        let text;
+        try{
+          text = await (await fh.getFile()).text();
+          const imported = parseQuotesJson(text);
+          for(const item of imported){
+            const idx = Store.data.quotes.findIndex(q=>q.id===item.id);
+            if(idx === -1){ Store.data.quotes.push(item); added++; }
+            else if((item.updatedAt||"") >= (Store.data.quotes[idx].updatedAt||"")){ Store.data.quotes[idx] = item; updated++; }
+            else skipped++;
+          }
+        }catch(e){
+          console.error("auto import failed:", fh.name, e);
+          failed++;
+          continue;  // 読めないファイルはフォルダに残しておく
+        }
+        await moveToDoneDir(handle, fh, text);
+      }
+      if(added || updated || skipped) Store.save();
+      if(added || updated || skipped || failed || !(opts && opts.silentIfNone)){
+        let msg = `自動取込：新規 ${added} 件 / 更新 ${updated} 件`;
+        if(skipped) msg += ` / アプリ側が新しいため見送り ${skipped} 件`;
+        if(failed) msg += ` / 読込失敗 ${failed} ファイル（フォルダに残しています）`;
+        toast(msg, failed > 0);
+      }
+      if(this.view === "quotes") this.render();
+    }finally{
+      this._autoImportRunning = false;
+    }
+  },
+
   go(view, opts){
     this.view = view;
     if(opts && opts.quoteId !== undefined) this.editingQuoteId = opts.quoteId;
@@ -1335,6 +1457,8 @@ const ViewQuotes = {
 
   selectedIds: new Set(),
   folderHandle: null,
+  autoImportHandle: null,
+  autoImportPending: false,
 
   render(){
     const all = Store.data.quotes;
@@ -1394,6 +1518,11 @@ const ViewQuotes = {
           ${(!this.showTrash && FS_ACCESS_SUPPORTED) ? `
           <div class="sub" style="margin-top:2px;">
             保存フォルダ：${this.folderHandle ? `<strong>${escapeHtml(this.folderHandle.name)}</strong>` : "未設定（エクスポート/インポートのたびに保存先を選びます）"}
+          </div>
+          <div class="sub" style="margin-top:2px;">
+            自動取込フォルダ：${this.autoImportHandle
+              ? `<strong>${escapeHtml(this.autoImportHandle.name)}</strong>（置かれた見積書を自動で一覧に反映します${this.autoImportPending ? "。画面をクリックすると取込みます" : ""}）`
+              : "未設定"}
           </div>` : ""}
         </div>
         <div class="btn-row">
@@ -1402,6 +1531,8 @@ const ViewQuotes = {
             : `${trashCount>0?`<button class="btn ghost" id="btn-show-trash">🗑 ゴミ箱を表示（${trashCount}件）</button>`:""}
                ${selectedCount>0?`<button class="btn danger" id="btn-delete-selected">選択した${selectedCount}件を削除</button>`:""}
                ${FS_ACCESS_SUPPORTED?`<button class="btn ghost" id="btn-set-folder">${this.folderHandle?"保存フォルダを変更":"共有フォルダを設定"}</button>`:""}
+               ${FS_ACCESS_SUPPORTED?`<button class="btn ghost" id="btn-set-autoimport">${this.autoImportHandle?"自動取込フォルダを変更":"自動取込フォルダを設定"}</button>`:""}
+               ${(FS_ACCESS_SUPPORTED && this.autoImportHandle)?`<button class="btn" id="btn-run-autoimport">今すぐ取込む</button>`:""}
                <button class="btn" id="btn-export-quotes">見積書をエクスポート</button>
                <button class="btn" id="btn-import-quotes">見積書をインポート</button>
                <button class="btn primary" id="btn-new-quote">＋ 新規見積書を作成</button>`}
@@ -1482,6 +1613,38 @@ const ViewQuotes = {
         if(err && err.name === "AbortError") return;
         console.error(err);
         toast("フォルダの設定に失敗しました: " + err.message, true);
+      }
+    });
+
+    const setAutoImportBtn = document.getElementById("btn-set-autoimport");
+    if(setAutoImportBtn) setAutoImportBtn.addEventListener("click", async ()=>{
+      try{
+        const handle = await window.showDirectoryPicker({ mode: "readwrite" });
+        await saveAutoImportHandle(handle);
+        this.autoImportHandle = handle;
+        this.autoImportPending = false;
+        toast(`自動取込フォルダを「${handle.name}」に設定しました`);
+        await App.runAutoImport({ silentIfNone: true });
+        App.render();
+      }catch(err){
+        if(err && err.name === "AbortError") return;
+        console.error(err);
+        toast("フォルダの設定に失敗しました: " + err.message, true);
+      }
+    });
+
+    const runAutoImportBtn = document.getElementById("btn-run-autoimport");
+    if(runAutoImportBtn) runAutoImportBtn.addEventListener("click", async ()=>{
+      try{
+        if(!(await ensureDirPermission(this.autoImportHandle))){
+          toast("自動取込フォルダへのアクセスが許可されませんでした", true);
+          return;
+        }
+        this.autoImportPending = false;
+        await App.runAutoImport({ silentIfNone: false });
+      }catch(err){
+        console.error(err);
+        toast("取込に失敗しました: " + err.message, true);
       }
     });
 

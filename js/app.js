@@ -808,6 +808,7 @@ async function ensureDirPermission(handle){
 /* ---------- 自動取込フォルダ（ここに置かれた見積書JSONを起動時などに自動でマージする）---------- */
 const AUTO_IMPORT_HANDLE_KEY = "quotesAutoImportFolder";
 const AUTO_IMPORT_DONE_DIR = "取込済み";
+const ATTACH_REQUEST_DIR = "添付依頼";   // 「返信下書きにPDFを添付」の依頼ファイル置き場（自動取込フォルダの中）
 async function saveAutoImportHandle(handle){
   const db = await openHandleDb();
   return new Promise((resolve, reject)=>{
@@ -1021,6 +1022,7 @@ function buildLineCodesXlsx(lineCodes){
    パスワード保護されたExcelファイル（Office 2010以降の既定「パスワードを使用して暗号化」形式）を
    ブラウザのWeb Crypto APIのみで復号する。SheetJS無料版は復号処理を持たないため自前実装。 */
 const KNOWN_XLSX_PASSWORDS = ["marumu"];
+const SETTINGS_EDIT_PASSWORD = "marumu";
 
 function utf16leBytes(str){
   const out = new Uint8Array(str.length*2);
@@ -2356,8 +2358,10 @@ const ViewLineCodes = {
    画面：設定（単価自動計算パラメータ・営業所）
    ========================================================== */
 const ViewSettings = {
+  unlocked: false,
   render(){
     const s = Store.data.settings;
+    const locked = !this.unlocked;
     const idxInputs = s.indices.map((v,i)=>
       `<input type="number" step="0.01" min="0.1" max="0.99" data-idx="${i}" class="idx-input" value="${v}" style="width:70px;">`
     ).join(" ");
@@ -2379,6 +2383,14 @@ const ViewSettings = {
         <div><h1>設定</h1><div class="sub">単価自動計算の各種係数と、見積書に表示する営業所情報を設定します</div></div>
       </div>
 
+      <div class="settings-lock-banner ${locked?"is-locked":"is-unlocked"}">
+        ${locked
+          ? `<span>🔒 内容の確認はできますが、変更にはパスワードが必要です</span><button class="btn small primary" id="btn-unlock-settings">ロックを解除して編集する</button>`
+          : `<span>🔓 編集可能な状態です</span><button class="btn small ghost" id="btn-relock-settings">ロックする</button>`
+        }
+      </div>
+
+      <div class="settings-lock-wrap${locked?" locked":""}">
       <div class="card card-pad" style="margin-bottom:18px;">
         <div class="panel-section"><h3>単価自動計算の係数</h3></div>
         <p class="hint" style="margin:-4px 0 14px;">原価リストの原価（円/kg）から、以下の式で基準容量の単価候補を算出します：<br>
@@ -2457,6 +2469,7 @@ const ViewSettings = {
         </div>
         ${this.renderBackupList()}
       </div>
+      </div>
     `;
   },
 
@@ -2479,7 +2492,57 @@ const ViewSettings = {
       </table>`;
   },
 
+  promptUnlock(){
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.innerHTML = `
+      <div class="modal">
+        <div class="modal-head"><h2>設定の編集ロック解除</h2><button class="modal-close">×</button></div>
+        <div class="modal-body">
+          <div class="field">
+            <label>パスワード</label>
+            <input type="password" id="settings-unlock-pw" autocomplete="off">
+          </div>
+          <p class="hint" id="settings-unlock-error" style="color:#c0392b; min-height:1.2em;"></p>
+        </div>
+        <div class="modal-foot">
+          <button class="btn" id="settings-unlock-cancel">キャンセル</button>
+          <button class="btn primary" id="settings-unlock-submit">解除</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const close = ()=> overlay.remove();
+    overlay.querySelector(".modal-close").addEventListener("click", close);
+    overlay.querySelector("#settings-unlock-cancel").addEventListener("click", close);
+    const pwInput = overlay.querySelector("#settings-unlock-pw");
+    const errorEl = overlay.querySelector("#settings-unlock-error");
+    const submit = ()=>{
+      if(pwInput.value === SETTINGS_EDIT_PASSWORD){
+        this.unlocked = true;
+        close();
+        App.render();
+        toast("設定のロックを解除しました");
+      } else {
+        errorEl.textContent = "パスワードが正しくありません";
+        pwInput.value = "";
+        pwInput.focus();
+      }
+    };
+    overlay.querySelector("#settings-unlock-submit").addEventListener("click", submit);
+    pwInput.addEventListener("keydown", (e)=>{ if(e.key==="Enter") submit(); });
+    setTimeout(()=> pwInput.focus(), 0);
+  },
+
   bind(){
+    const unlockBtn = document.getElementById("btn-unlock-settings");
+    if(unlockBtn) unlockBtn.addEventListener("click", ()=> this.promptUnlock());
+    const relockBtn = document.getElementById("btn-relock-settings");
+    if(relockBtn) relockBtn.addEventListener("click", ()=>{
+      this.unlocked = false;
+      App.render();
+      toast("設定をロックしました");
+    });
+
     document.getElementById("btn-save-settings").addEventListener("click", ()=>{
       const s = Store.data.settings;
       s.manufacturingCostPerKg = Number(document.getElementById("s-mfg").value)||0;
@@ -2912,12 +2975,13 @@ const ViewEditor = {
           <button class="btn ghost" id="btn-back">← 一覧に戻る</button>
           <button class="btn primary" id="btn-print-quote">🖨 ①見積書を印刷/PDF保存</button>
           <button class="btn primary" id="btn-print-quote-trial">🖨 ②見積書＋新試算表を印刷/PDF保存</button>
+          ${locked && FS_ACCESS_SUPPORTED ? `<button class="btn primary" id="btn-attach-reply" title="検印済みの見積書をPDFにして、お客様への返信下書き（Outlook）に添付し、その下書きを開きます">📎 返信下書きにPDFを添付</button>` : ""}
         </div>
       </div>
 
       ${locked ? `
       <div class="locked-banner">
-        <span><strong>検印済みのため内容は編集できません。</strong> 印刷・PDF保存はそのまま行えます。</span>
+        <span><strong>検印済みのため内容は編集できません。</strong> 印刷・PDF保存はそのまま行えます。${FS_ACCESS_SUPPORTED ? `「📎 返信下書きにPDFを添付」で、Outlookの返信下書き${q.replyDraft ? "（見積依頼への返信）" : ""}にこの見積書のPDFを添付できます。` : ""}</span>
         <button class="btn small danger" id="btn-unlock">検印を解除して編集する</button>
       </div>` : ""}
 
@@ -3031,6 +3095,8 @@ const ViewEditor = {
     document.getElementById("btn-back").addEventListener("click", ()=> App.go("quotes"));
     document.getElementById("btn-print-quote").addEventListener("click", ()=> this.printQuote(q, {includeTrial:false}));
     document.getElementById("btn-print-quote-trial").addEventListener("click", ()=> this.printQuote(q, {includeTrial:true}));
+    const attachBtn = document.getElementById("btn-attach-reply");
+    if(attachBtn) attachBtn.addEventListener("click", ()=> this.attachToReplyDraft(q));
     document.getElementById("tab-preview-quote").addEventListener("click", ()=>{ this.previewMode="quote"; this.updatePreview(); });
     document.getElementById("tab-preview-trial").addEventListener("click", ()=>{ this.previewMode="trial"; this.updatePreview(); });
 
@@ -3642,6 +3708,40 @@ const ViewEditor = {
       close();
       App.render();
     });
+  },
+
+  // 検印済みの見積書を、このPCの連携プログラム（mitsumori: リンク）経由でOutlookの返信下書きに添付する。
+  // ブラウザからOutlookは直接操作できないため、自動取込フォルダの「添付依頼」に見積書と設定を書き出してから
+  // mitsumori:attach/<見積ID> を開く。連携プログラムがPDF化・添付・下書きの表示を行う（送信はしない）。
+  async attachToReplyDraft(q){
+    if(!this.isLocked(q)){ toast("検印を押してから実行してください", true); return; }
+    const handle = ViewQuotes.autoImportHandle;
+    if(!handle){
+      toast("先に「見積書一覧」で自動取込フォルダ（見積取込待ち）を設定してください", true);
+      return;
+    }
+    try{
+      if(!(await ensureDirPermission(handle))){ toast("自動取込フォルダへのアクセスが許可されませんでした", true); return; }
+      const dir = await handle.getDirectoryHandle(ATTACH_REQUEST_DIR, { create: true });
+      const fh = await dir.getFileHandle(`${q.id}.json`, { create: true });
+      const w = await fh.createWritable();
+      await w.write(JSON.stringify({
+        type: "mitsumoriApp_attach_request", version: 1, requestedAt: new Date().toISOString(),
+        settings: Store.data.settings, quote: q
+      }, null, 2));
+      await w.close();
+    }catch(e){
+      console.error(e);
+      toast("添付依頼の書き出しに失敗しました: " + e.message, true);
+      return;
+    }
+    const link = document.createElement("a");
+    link.href = `mitsumori:attach/${q.id}`;
+    link.style.display = "none";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    toast("Outlookの返信下書きに見積書PDFを添付しています。下書きが開いたら内容を確認して送信してください（ブラウザに「開きますか？」と出たら許可してください）");
   },
 
   printQuote(q, opts){

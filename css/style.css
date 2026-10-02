@@ -177,6 +177,11 @@ table.grid tbody tr:hover{ background:#fafbfc; }
 .locked-banner{ background:var(--color-success-tint); color:var(--color-success); border:1px solid #bfe6d3; border-radius:var(--radius-sm); padding:10px 14px; font-size:13px; display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:14px;}
 .locked-banner strong{ font-weight:700; }
 
+.settings-lock-banner{ display:flex; align-items:center; gap:12px; padding:10px 14px; border-radius:var(--radius-sm); margin-bottom:14px; font-size:13px; }
+.settings-lock-banner.is-locked{ background:#fff4e5; border:1px solid #f0c36d; color:#7a5b00; }
+.settings-lock-banner.is-unlocked{ background:var(--color-success-tint); border:1px solid #bfe6d3; color:var(--color-success); }
+.settings-lock-wrap.locked{ opacity:.55; pointer-events:none; user-select:none; }
+
 .item-toolbar{ display:flex; gap:8px; margin-bottom:10px; flex-wrap:wrap; }
 #btn-add-from-master.item-tab-btn, #btn-add-blank.item-tab-btn{
   padding:7.5px 15px; font-size:18.75px; font-weight:700; border-radius:8px;

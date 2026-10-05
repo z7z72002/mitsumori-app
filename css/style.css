@@ -150,6 +150,11 @@ table.grid tbody tr:hover{ background:#fafbfc; }
 .preview-tab-btn.active{ background:var(--color-primary); color:#fff; border-color:var(--color-primary); }
 
 .preview-wrap{ background:#e9ebef; border-radius:var(--radius); padding:22px; display:flex; justify-content:center; overflow:auto; }
+.excel-export-panel{ background:#fff; border-radius:var(--radius); padding:22px 26px; max-width:560px; width:100%; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+.excel-export-panel h3{ margin:0 0 8px; font-size:16px; }
+.excel-export-panel p{ margin:0 0 14px; font-size:13px; line-height:1.7; color:var(--color-text-sub); }
+.excel-export-actions{ display:flex; flex-direction:column; gap:10px; margin-bottom:12px; }
+.excel-export-actions .btn{ justify-content:center; }
 
 .seal-box-row{ display:flex; gap:0; border-radius:6px; overflow:hidden; width:max-content; }
 .seal-box{
@@ -196,6 +201,7 @@ table.grid tbody tr:hover{ background:#fafbfc; }
 .item-edit-table input, .item-edit-table select{ width:100%; border:1px solid transparent; padding:6px 6px; border-radius:4px; background:transparent; font-size:12.8px; }
 .item-edit-table input:hover, .item-edit-table select:hover{ background:#f7f8fa; }
 .item-edit-table input:focus, .item-edit-table select:focus{ background:#fff; border-color:var(--color-primary); outline:none; }
+.item-edit-table select.cand-select{ margin-top:3px; padding:3px 4px; font-size:11.5px; border:1px solid var(--color-primary); color:var(--color-primary); background:#fff; cursor:pointer; }
 .item-edit-table .col-actions{ white-space:nowrap; text-align:center; }
 .item-edit-table .col-actions button{ border:none; background:none; padding:3px 5px; color:var(--color-text-sub); font-size:13px; }
 .item-edit-table .col-actions button:hover{ color:var(--color-primary); }

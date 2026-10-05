@@ -586,9 +586,9 @@ function calcPriceCandidates(costPerKg, settings, recommendedIndex){
   const gBase = ((Number(costPerKg)||0) + s.manufacturingCostPerKg) * s.baseContainerKg + s.canFeeBase;
   const hBase = gBase * (1 + s.sgaRate);
   let indices = s.indices.slice();
-  if(recommendedIndex != null && !indices.some(i=>Math.abs(i-recommendedIndex)<1e-9)){
-    indices = [...indices, recommendedIndex].sort((a,b)=>a-b);
-  }
+  // 推奨（標準）指数から0.05刻みで5段（価格が高くなる方向）。推奨が無い製品は0.75を起点にする（推奨表示はしない）
+  const centerIndex = recommendedIndex != null ? recommendedIndex : 0.75;
+  indices = [0,1,2,3,4].map(k=>Math.round((centerIndex - 0.05*k)*100)/100).filter(i=>i>0).sort((a,b)=>a-b);
   const isRecommended = idx => recommendedIndex != null && Math.abs(idx-recommendedIndex) < 1e-9;
   const baseCandidates = indices.map(idx => ({ index: idx, price: idx > 0 ? roundUp10(hBase/idx) : 0, recommended: isRecommended(idx) }));
   const smallCandidates = baseCandidates.map(c => ({
@@ -639,6 +639,20 @@ function matchLineCode(productCode, lineCodes){
     }
   }
   return best;
+}
+// 単価欄の下に出す価格候補（自動作成の見積書・硬化剤/シンナーの他支店価格など）を、1つのプルダウンにまとめる。
+// 「原価820.07円/kg×指数0.62」のように共通する原価の部分は見出しに1回だけ出し、各候補は「指数0.62：¥42,660」と短くする。
+function candidateSelectHtml(cands){
+  const COST_RE = /^原価([\d.,]+)円\/kg×/;
+  const costs = new Set(cands.map(c=>{ const m = COST_RE.exec(c.label||""); return m ? m[1] : null; }));
+  const commonCost = (costs.size === 1 && !costs.has(null)) ? [...costs][0] : null;
+  const options = cands.map((c,ci)=>{
+    const label = commonCost ? String(c.label||"").replace(COST_RE, "") : String(c.label||"");
+    return `<option value="${ci}">${escapeHtml(label)}：${yen(c.price)}</option>`;
+  }).join("");
+  const head = `価格候補から選ぶ（${commonCost ? `原価${commonCost}円/kg・` : ""}${cands.length}件）`;
+  return `<select class="cand-select" data-act="apply-calc-candidate-select" title="選ぶとその単価が入ります">
+    <option value="">${escapeHtml(head)}</option>${options}</select>`;
 }
 function lineHintHtml(code){
   const lm = matchLineCode(code, Store.data.lineCodes);
@@ -840,6 +854,49 @@ async function moveToDoneDir(dirHandle, fileHandle, text){
   await w.write(text);
   await w.close();
   await dirHandle.removeEntry(fileHandle.name);
+}
+
+/* ---------- 特価マスタの自動更新フォルダ（新しい特価マスタが置かれたら商品データを自動で更新する）---------- */
+const MASTER_FOLDER_HANDLE_KEY = "masterFolder";
+// 「特価マスタ_260916_13時00分.xlsx」形式。Excelの一時ファイル（~$で始まる）は対象外
+const MASTER_FILE_NAME_RE = /^特価マスタ_(\d{6})_(\d{2})時(\d{2})分\.xlsx$/i;
+async function saveMasterFolderHandle(handle){
+  const db = await openHandleDb();
+  return new Promise((resolve, reject)=>{
+    const tx = db.transaction(DIR_HANDLE_STORE, "readwrite");
+    tx.objectStore(DIR_HANDLE_STORE).put(handle, MASTER_FOLDER_HANDLE_KEY);
+    tx.oncomplete = ()=> resolve();
+    tx.onerror = ()=> reject(tx.error);
+  });
+}
+async function loadMasterFolderHandle(){
+  const db = await openHandleDb();
+  return new Promise((resolve, reject)=>{
+    const tx = db.transaction(DIR_HANDLE_STORE, "readonly");
+    const req = tx.objectStore(DIR_HANDLE_STORE).get(MASTER_FOLDER_HANDLE_KEY);
+    req.onsuccess = ()=> resolve(req.result || null);
+    req.onerror = ()=> reject(req.error);
+  });
+}
+async function queryReadPermissionSilent(handle){
+  try{ return (await handle.queryPermission({ mode: "read" })) === "granted"; }
+  catch(e){ return false; }
+}
+async function ensureReadPermission(handle){
+  if(await queryReadPermissionSilent(handle)) return true;
+  return (await handle.requestPermission({ mode: "read" })) === "granted";
+}
+// フォルダ内で、ファイル名の日時（YYMMDD_HH時MM分）が一番新しい特価マスタを返す（見積スキルの選び方と同じ）
+async function findLatestMasterFile(dirHandle){
+  let best = null, bestKey = "";
+  for await (const entry of dirHandle.values()){
+    if(entry.kind !== "file") continue;
+    const m = MASTER_FILE_NAME_RE.exec(entry.name);
+    if(!m) continue;
+    const key = m[1] + m[2] + m[3];
+    if(key > bestKey){ bestKey = key; best = entry; }
+  }
+  return best;
 }
 
 /* ---------- 商品データファイル（特価/原価管理リストの永続化先、File System Access API）---------- */
@@ -1302,10 +1359,19 @@ const App = {
       }).catch(()=>{});
       // アプリを開いたまま別の作業から戻ってきた時にも、新しく置かれたファイルを取込む
       document.addEventListener("visibilitychange", async ()=>{
+        if(document.visibilityState !== "visible") return;
         const handle = ViewQuotes.autoImportHandle;
-        if(document.visibilityState !== "visible" || !handle) return;
-        if(await queryFilePermissionSilent(handle)) this.runAutoImport({ silentIfNone: true });
+        if(handle && await queryFilePermissionSilent(handle)) this.runAutoImport({ silentIfNone: true });
+        this.maybeRunMasterSync();
       });
+      // 特価マスタの自動更新フォルダ：許可が残っていれば確認。残っていなければ最初のクリック時に確認する。
+      loadMasterFolderHandle().then(async handle=>{
+        if(!handle) return;
+        ViewProducts.masterFolderHandle = handle;
+        if(await queryReadPermissionSilent(handle)) this.maybeRunMasterSync();
+        else this.armMasterFolderPermission();
+        if(this.view === "products") this.render();
+      }).catch(()=>{});
       // 商品データファイルの自動復元はベストエフォート：復元できなくても「未連携」のまま普通に使える
       loadProductFileHandle().then(async handle=>{
         if(!handle) return;
@@ -1334,6 +1400,76 @@ const App = {
     Store.pendingProductFileHandle = null;
     Store.data.products = products;
     if(this.view === "products") this.render();
+    this.maybeRunMasterSync();
+  },
+
+  // 商品データファイルと連携済みで、特価マスタのフォルダに読み取り許可がある時だけ自動更新を確認する
+  async maybeRunMasterSync(){
+    const dir = ViewProducts.masterFolderHandle;
+    if(!dir || !Store.productFileActive) return;
+    if(!(await queryReadPermissionSilent(dir))) return;
+    await this.runMasterSync({ silent: true });
+  },
+
+  // 特価マスタのフォルダから一番新しい特価マスタを探し、前回取り込んだものより新しければ商品データを置き換える。
+  // 特価マスタは全件のデータなので「全て置き換える」と同じ扱い（0円品番の備考の自動作成なども含む）。
+  async runMasterSync(opts){
+    opts = opts || {};
+    const dir = ViewProducts.masterFolderHandle;
+    if(!dir || this._masterSyncRunning) return;
+    if(!Store.productFileActive){
+      if(!opts.silent) toast("先に商品データファイルと連携してください（未連携のまま大量データを取込むと保存エラーになります）", true);
+      return;
+    }
+    this._masterSyncRunning = true;
+    try{
+      const fh = await findLatestMasterFile(dir);
+      if(!fh){
+        if(!opts.silent) toast("フォルダに特価マスタ（特価マスタ_YYMMDD_HH時MM分.xlsx）が見つかりません", true);
+        return;
+      }
+      const file = await fh.getFile();
+      const last = Store.data.masterSync || {};
+      if(!opts.force && last.name === fh.name && last.lastModified === file.lastModified){
+        if(!opts.silent) toast(`最新の特価マスタ「${fh.name}」は取込済みです`);
+        return;
+      }
+      toast(`特価マスタ「${fh.name}」を取り込んでいます…`);
+      const imported = mapMasterRowsToProducts(await parseMasterExcelFile(file));
+      const current = Store.data.products.length;
+      // 壊れたファイル・途中までのファイルで商品データを消さないための安全策
+      if(imported.length < 1000 || (current && imported.length < current * 0.5)){
+        toast(`特価マスタ「${fh.name}」の件数が少ないため（${imported.length}件）自動更新を中止しました。内容を確認し「特価マスタファイルを取込む」から取り込んでください`, true);
+        return;
+      }
+      Store.data.products = imported;
+      Store.data.masterSync = { name: fh.name, lastModified: file.lastModified, appliedAt: new Date().toISOString(), count: imported.length };
+      await Store.save();
+      toast(`特価マスタ「${fh.name}」で商品データを更新しました（${imported.length.toLocaleString()}件）`);
+      if(this.view === "products") this.render();
+    }catch(e){
+      console.error(e);
+      toast("特価マスタの自動更新に失敗しました：" + e.message, true);
+    }finally{
+      this._masterSyncRunning = false;
+    }
+  },
+
+  armMasterFolderPermission(){
+    if(this._masterArmed) return;
+    this._masterArmed = true;
+    const tryGrant = async ()=>{
+      document.removeEventListener("click", tryGrant, true);
+      document.removeEventListener("keydown", tryGrant, true);
+      this._masterArmed = false;
+      const dir = ViewProducts.masterFolderHandle;
+      if(!dir) return;
+      try{
+        if(await ensureReadPermission(dir)) await this.maybeRunMasterSync();
+      }catch(e){ /* 許可されなければ「今すぐ確認」ボタンから再度試せる */ }
+    };
+    document.addEventListener("click", tryGrant, true);
+    document.addEventListener("keydown", tryGrant, true);
   },
 
   armProductFileReconnect(){
@@ -1802,6 +1938,7 @@ const ViewProducts = {
   filterCode: "",
   filterClient: "",
   DISPLAY_LIMIT: 200,
+  masterFolderHandle: null,
 
   render(){
     const list = Store.data.products.filter(p=>{
@@ -1842,6 +1979,12 @@ const ViewProducts = {
               : Store.pendingProductFileHandle ? `<strong style="color:#c0392b;">「${escapeHtml(Store.pendingProductFileHandle.name)}」との連携が切れています。</strong> 画面のどこかをクリックすると自動で再連携します（うまくいかない場合は下の「今すぐ再連携」ボタンを押してください）`
               : "未設定（ブラウザ内に保存されています。件数が多い場合はファイル連携をおすすめします）"
             }
+          </div>
+          <div class="sub" style="margin-top:2px;">
+            特価マスタの自動更新：${this.masterFolderHandle
+              ? `フォルダ「<strong>${escapeHtml(this.masterFolderHandle.name)}</strong>」に新しい特価マスタが置かれたら、アプリを開いた時に商品データを自動で更新します`
+              : "未設定（「特価マスタの自動更新フォルダを設定」で特価マスタを置くフォルダを選ぶと、新しい特価マスタで自動更新します）"}
+            ${Store.data.masterSync ? `／ 最終更新：${escapeHtml(Store.data.masterSync.name)}（${formatDateTimeJp(Store.data.masterSync.appliedAt)}・${Number(Store.data.masterSync.count).toLocaleString()}件）` : ""}
           </div>` : ""}
         </div>
         <div class="btn-row">
@@ -1855,6 +1998,9 @@ const ViewProducts = {
           <button class="btn" id="btn-export-xlsx">Excelで書き出す</button>
           <button class="btn primary" id="btn-import">CSV / Excelから取込む</button>
           <button class="btn primary" id="btn-import-master">特価マスタファイルを取込む</button>
+          ${FS_ACCESS_SUPPORTED ? `
+          <button class="btn ghost" id="btn-set-master-folder">${this.masterFolderHandle ? "特価マスタの自動更新フォルダを変更" : "特価マスタの自動更新フォルダを設定"}</button>
+          ${this.masterFolderHandle ? `<button class="btn" id="btn-run-master-sync">特価マスタを今すぐ確認</button>` : ""}` : ""}
         </div>
       </div>
 
@@ -2031,6 +2177,27 @@ const ViewProducts = {
         toast("取込に失敗しました: " + err.message, true);
       }
       masterFileInput.value = "";
+    });
+
+    const setMasterFolderBtn = document.getElementById("btn-set-master-folder");
+    if(setMasterFolderBtn) setMasterFolderBtn.addEventListener("click", async ()=>{
+      try{
+        const handle = await window.showDirectoryPicker({ id: "masterFolder", mode: "read" });
+        this.masterFolderHandle = handle;
+        saveMasterFolderHandle(handle).catch(()=>{});
+        App.render();
+        toast(`特価マスタの自動更新フォルダを「${handle.name}」に設定しました`);
+        await App.runMasterSync({ silent: false });
+      }catch(e){
+        if(e.name !== "AbortError") toast("フォルダを設定できませんでした：" + e.message, true);
+      }
+    });
+    const runMasterSyncBtn = document.getElementById("btn-run-master-sync");
+    if(runMasterSyncBtn) runMasterSyncBtn.addEventListener("click", async ()=>{
+      try{
+        if(!(await ensureReadPermission(this.masterFolderHandle))){ toast("特価マスタのフォルダへのアクセスが許可されませんでした", true); return; }
+        await App.runMasterSync({ silent: false });
+      }catch(e){ toast("特価マスタの確認に失敗しました：" + e.message, true); }
     });
 
     document.querySelectorAll("#view-root tbody tr[data-id]").forEach(tr=>{
@@ -2905,6 +3072,278 @@ function renderTrialSheetHTML(quote, settings){
 }
 
 /* ==========================================================
+   Excel出力（見積書・新試算表を、印刷/PDFと同じ内容で .xlsx にする）
+   書式（罫線・セル結合・金額書式・画像）が必要なため ExcelJS を使う。
+   1MB近いライブラリなので、ボタンを押した時に初めて読み込む。
+   ========================================================== */
+let _excelJsPromise = null;
+function loadExcelJS(){
+  if(window.ExcelJS) return Promise.resolve(window.ExcelJS);
+  if(!_excelJsPromise){
+    _excelJsPromise = new Promise((resolve, reject)=>{
+      const sc = document.createElement("script");
+      sc.src = "lib/exceljs.min.js";
+      sc.onload = ()=> window.ExcelJS ? resolve(window.ExcelJS) : reject(new Error("Excel出力用のライブラリを読み込めませんでした"));
+      sc.onerror = ()=>{ _excelJsPromise = null; reject(new Error("Excel出力用のライブラリ（lib/exceljs.min.js）を読み込めませんでした")); };
+      document.head.appendChild(sc);
+    });
+  }
+  return _excelJsPromise;
+}
+
+// 検印（丸印）を画像にする。画面・印刷の qs-seal-stamp と同じ「部署／日付／氏名」の3段。
+function sealPngDataUrl(seal, px){
+  px = px || 160;
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = px;
+  const g = cv.getContext("2d");
+  const c = px / 2, r = px / 2 - px * 0.04;
+  g.fillStyle = "#fff"; g.fillRect(0, 0, px, px);
+  g.strokeStyle = "#000"; g.lineWidth = px * 0.035;
+  g.beginPath(); g.arc(c, c, r, 0, Math.PI * 2); g.stroke();
+  g.lineWidth = px * 0.014;
+  [px * 0.37, px * 0.63].forEach(y=>{
+    const dx = Math.sqrt(r * r - (y - c) * (y - c));
+    g.beginPath(); g.moveTo(c - dx, y); g.lineTo(c + dx, y); g.stroke();
+  });
+  const font = '"Yu Gothic","MS PGothic",sans-serif';
+  g.fillStyle = "#000"; g.textAlign = "center"; g.textBaseline = "middle";
+  g.font = `bold ${px * 0.17}px ${font}`; g.fillText(seal.dept || "", c, px * 0.24);
+  g.font = `bold ${px * 0.13}px ${font}`; g.fillText(formatDateDots(seal.sealedAt), c, px * 0.5);
+  g.font = `bold ${px * 0.2}px ${font}`; g.fillText(seal.name || "", c, px * 0.78);
+  return cv.toDataURL("image/png");
+}
+
+const XL_FONT = "ＭＳ Ｐ明朝";
+const XL_YEN = '"¥"#,##0';
+function xlCell(ws, row, col, value, opt){
+  opt = opt || {};
+  const cell = ws.getCell(row, col);
+  cell.value = value;
+  cell.font = { name: XL_FONT, size: opt.size || 10.5, bold: !!opt.bold, color: opt.color ? { argb: opt.color } : undefined };
+  cell.alignment = { vertical: opt.v || "middle", horizontal: opt.h || "left", wrapText: opt.wrap !== false };
+  if(opt.numFmt) cell.numFmt = opt.numFmt;
+  return cell;
+}
+// 範囲の外枠（と必要なら内側の罫線）を引く。結合セルにも各セルへ罫線を付けないと欠けるため1セルずつ設定する。
+function xlBox(ws, r1, c1, r2, c2, outer, inner){
+  for(let r = r1; r <= r2; r++){
+    for(let c = c1; c <= c2; c++){
+      const cell = ws.getCell(r, c);
+      const b = Object.assign({}, cell.border || {});
+      if(inner){ b.top = b.top || inner; b.bottom = b.bottom || inner; b.left = b.left || inner; b.right = b.right || inner; }
+      if(r === r1) b.top = outer;
+      if(r === r2) b.bottom = outer;
+      if(c === c1) b.left = outer;
+      if(c === c2) b.right = outer;
+      cell.border = b;
+    }
+  }
+}
+function xlMerge(ws, r1, c1, r2, c2){ if(r1 !== r2 || c1 !== c2) ws.mergeCells(r1, c1, r2, c2); }
+function xlImage(wb, dataUrl){ return wb.addImage({ base64: dataUrl.replace(/^data:image\/png;base64,/, ""), extension: "png" }); }
+
+function addQuoteWorksheet(wb, quote, settings){
+  const ws = wb.addWorksheet("見積書", {
+    views: [{ showGridLines: false }],
+    pageSetup: { paperSize: 9, orientation: "portrait", fitToPage: true, fitToWidth: 1, fitToHeight: 0, horizontalCentered: true,
+                 margins: { left: 0.5, right: 0.5, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 } }
+  });
+  ws.columns = [{ width: 22 }, { width: 30 }, { width: 14 }, { width: 14 }, { width: 14 }];
+  const thin = { style: "thin" }, medium = { style: "medium" };
+  const office = getOffice(quote, settings);
+  const hasPerson = !!(quote.customerPerson && quote.customerPerson.trim());
+
+  ws.getRow(1).height = 26;
+  ws.addImage(xlImage(wb, LOGO_DATA_URI), { tl: { col: 0, row: 0 }, ext: { width: 133, height: 29 } });
+  xlCell(ws, 2, 5, quote.number || "", { h: "right", size: 10 });
+  ws.getRow(3).height = 34;
+  xlMerge(ws, 3, 1, 3, 4);
+  xlCell(ws, 3, 1, "御　見　積　書", { h: "center", size: 20, bold: true });
+  xlCell(ws, 3, 5, formatDateJp(quote.date), { h: "right", size: 10.5, wrap: false });
+  ws.getRow(4).height = 8;
+
+  xlMerge(ws, 5, 1, 5, 2);
+  xlCell(ws, 5, 1, hasPerson ? quote.customerCompany : `${quote.customerCompany}　御中`, { size: 14 });
+  xlMerge(ws, 5, 3, 5, 5);
+  xlCell(ws, 5, 3, office.name, { h: "right", size: 11, bold: true });
+  xlMerge(ws, 6, 1, 6, 2);
+  if(hasPerson) xlCell(ws, 6, 1, `${quote.customerPerson}　様`, { size: 14 });
+  xlMerge(ws, 6, 3, 8, 5);
+  xlCell(ws, 6, 3, office.address || "", { h: "right", v: "top", size: 9 });
+  [5, 6].forEach(r=> ws.getRow(r).height = 24);
+
+  xlMerge(ws, 9, 1, 9, 5);
+  xlCell(ws, 9, 1, "下記の通り御見積り申し上げます。", { size: 10.5 });
+  ws.getRow(10).height = 8;
+
+  // 摘要欄（テーマ・納期など）と検印欄
+  const meta = [["テーマ/ユーザー名", quote.theme], ["受渡し期日又は納期", quote.deliveryDate], ["受　渡　し　場　所", quote.deliveryPlace],
+                ["御　取　引　方　法", quote.tradeTerms], ["有　効　期　限", quote.validPeriod]];
+  meta.forEach(([label, value], k)=>{
+    const r = 11 + k;
+    ws.getRow(r).height = 19;
+    xlCell(ws, r, 1, label, { size: 10 });
+    xlCell(ws, r, 2, value || "", { size: 10 });
+    [1, 2].forEach(c=> ws.getCell(r, c).border = { bottom: thin });
+  });
+  (quote.seals || [null, null, null]).forEach((seal, k)=>{
+    const col = 3 + k;
+    xlMerge(ws, 11, col, 15, col);
+    xlBox(ws, 11, col, 15, col, thin);
+    if(seal) ws.addImage(xlImage(wb, sealPngDataUrl(seal)), { tl: { col: col - 1 + 0.1, row: 10 + 1.0 }, ext: { width: 72, height: 72 } });
+  });
+  ws.getRow(16).height = 10;
+
+  // 品目表（同じ品番・品名が続く行は、品番・品名のセルを縦に結合する＝画面の rowspan と同じ）
+  const head = ["品　番", "品　名", "容　量", "単　価", "備　考"];
+  head.forEach((t, k)=> xlCell(ws, 17, k + 1, t, { h: "center", bold: true }));
+  ws.getRow(17).height = 20;
+  const items = quote.items || [];
+  let r = 18;
+  for(let i = 0; i < items.length; i++){
+    const it = items[i];
+    let span = 1;
+    while(i + span < items.length && items[i + span].code === it.code && items[i + span].name === it.name) span++;
+    for(let k = 0; k < span; k++){
+      const row = items[i + k];
+      xlCell(ws, r + k, 3, `${row.capacity} ${row.unit || "Kg"}`, { h: "center" });
+      xlCell(ws, r + k, 4, Number(row.unitPrice) || 0, { h: "right", numFmt: XL_YEN });
+      xlCell(ws, r + k, 5, row.note || "", { h: "center", size: 10 });
+      ws.getRow(r + k).height = 20;
+    }
+    xlMerge(ws, r, 1, r + span - 1, 1);
+    xlMerge(ws, r, 2, r + span - 1, 2);
+    xlCell(ws, r, 1, it.code || "");
+    xlCell(ws, r, 2, it.name || "");
+    r += span;
+    i += span - 1;
+  }
+  const lastRow = Math.max(r - 1, 17);
+  xlBox(ws, 17, 1, lastRow, 5, medium, thin);
+  xlBox(ws, 17, 1, 17, 5, medium);
+
+  // 摘要・調色料・運賃
+  let rr = lastRow + 2;
+  const remarks = [`摘要：${quote.remarks || ""}`,
+                   quote.toningEnabled === false ? "調色料の請求は御座いません" : (quote.toning || ""),
+                   "～運賃について～", ...(quote.freightNotes || [])];
+  remarks.forEach(text=>{
+    xlMerge(ws, rr, 1, rr, 5);
+    xlCell(ws, rr, 1, text, { size: 10 });
+    rr++;
+  });
+  return ws;
+}
+
+function addTrialWorksheet(wb, quote, settings){
+  const s = settings;
+  const groups = buildTrialSheetGroups(quote, settings);
+  const ws = wb.addWorksheet("新試算表", {
+    views: [{ showGridLines: false }],
+    pageSetup: { paperSize: 9, orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0,
+                 margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 } }
+  });
+  const nIdx = s.indices.length;
+  const COL = { code: 1, name: 2, costType: 3, cost: 4, mfg: 5, cap: 6, gBase: 7, hBase: 8, idx: 9, decided: 9 + nIdx, note: 10 + nIdx };
+  const lastCol = COL.note;
+  ws.columns = [16, 22, 13, 10, 10, 7, 11, 11, ...s.indices.map(()=>10), 11, 28].map(w=>({ width: w }));
+  const thin = { style: "thin" }, medium = { style: "medium" };
+
+  xlMerge(ws, 1, 1, 1, lastCol);
+  xlCell(ws, 1, 1, "販売価格試算表", { h: "center", size: 16, bold: true });
+  ws.getRow(1).height = 28;
+  xlMerge(ws, 2, 1, 2, 6);
+  xlCell(ws, 2, 1, "[販売店]　[担当者宛名]", { color: "FF888888" });
+  xlMerge(ws, 2, lastCol - 2, 2, lastCol);
+  xlCell(ws, 2, lastCol - 2, `試算日　${formatDateJp(quote.date)}`, { h: "right" });
+  xlMerge(ws, 3, 1, 3, lastCol);
+  xlCell(ws, 3, 1, `${quote.customerCompany || ""}${quote.customerPerson ? `　${quote.customerPerson}　様` : ""}${quote.theme ? `　／　ユーザー：${quote.theme}` : ""}`, { size: 12 });
+
+  const headRow = 5;
+  const heads = ["品番", "品名", "原価の種類", "k原価", "製造コスト", "入目", "売上原価", `×販管費${Math.round(s.sgaRate * 100)}%`,
+                 ...s.indices.map(v=> Number(v).toFixed(2)), "決定価格", "備考"];
+  heads.forEach((t, k)=> xlCell(ws, headRow, k + 1, t, { h: "center", bold: true, size: 9.5 }));
+  ws.getRow(headRow).height = 22;
+
+  let r = headRow + 1;
+  groups.forEach(g=>{
+    const total = g.rows.length;
+    g.rows.forEach((row, i)=>{
+      const rowNo = r + i;
+      ws.getRow(rowNo).height = 18;
+      if(i === 0 || i === g.capsCountPerType){
+        xlMerge(ws, rowNo, COL.costType, rowNo + g.capsCountPerType - 1, COL.costType);
+        xlCell(ws, rowNo, COL.costType, row.costType, { h: "center", size: 9.5 });
+      }
+      xlCell(ws, rowNo, COL.cost, Number(row.costPerKg) || 0, { h: "right", numFmt: XL_YEN, size: 9.5 });
+      xlCell(ws, rowNo, COL.mfg, Number(row.manufacturingCost) || 0, { h: "right", numFmt: XL_YEN, size: 9.5 });
+      xlCell(ws, rowNo, COL.cap, `${row.capacity}kg`, { h: "center", size: 9.5 });
+      xlCell(ws, rowNo, COL.gBase, Math.round(row.gBase), { h: "right", numFmt: XL_YEN, size: 9.5 });
+      xlCell(ws, rowNo, COL.hBase, Math.round(row.hBase), { h: "right", numFmt: XL_YEN, size: 9.5 });
+      s.indices.forEach((_, k)=>{
+        const cand = row.candidates ? row.candidates[k] : null;
+        xlCell(ws, rowNo, COL.idx + k, cand ? cand.price : "—", { h: cand ? "right" : "center", numFmt: cand ? XL_YEN : undefined, size: 9.5 });
+      });
+      xlCell(ws, rowNo, COL.decided, row.decidedPrice != null ? Number(row.decidedPrice) : "", { h: "right", numFmt: XL_YEN, size: 9.5, bold: true });
+    });
+    xlMerge(ws, r, COL.code, r + total - 1, COL.code);
+    xlCell(ws, r, COL.code, g.code, { size: 9.5 });
+    xlMerge(ws, r, COL.name, r + total - 1, COL.name);
+    xlCell(ws, r, COL.name, g.name, { size: 9.5 });
+    xlMerge(ws, r, COL.note, r + total - 1, COL.note);
+    xlCell(ws, r, COL.note, [g.note, ...g.refLines].filter(Boolean).join("\n"), { v: "top", size: 9 });
+    r += total;
+  });
+  const lastRow = Math.max(r - 1, headRow);
+  xlBox(ws, headRow, 1, lastRow, lastCol, medium, thin);
+  xlBox(ws, headRow, 1, headRow, lastCol, medium);
+
+  let rr = lastRow + 2;
+  const idxNotes = groups.map(g=> g.recommendedIndexNote).filter(Boolean);
+  if(idxNotes.length){
+    xlCell(ws, rr, 1, "推奨指数", { bold: true });
+    rr++;
+    idxNotes.forEach(t=>{ xlMerge(ws, rr, 1, rr, lastCol); xlCell(ws, rr, 1, t, { size: 9.5 }); rr++; });
+    rr++;
+  }
+  if(quote.trialSheetNote){
+    xlCell(ws, rr, 1, "備考", { bold: true });
+    rr++;
+    String(quote.trialSheetNote).split("\n").forEach(t=>{ xlMerge(ws, rr, 1, rr, lastCol); xlCell(ws, rr, 1, t, { size: 9.5 }); rr++; });
+    rr++;
+  }
+  // 検印欄（画面と同じく右下に3枠、最初の検印を右端に表示）
+  const primarySeal = (quote.seals || []).find(Boolean) || null;
+  for(let k = 0; k < 3; k++){
+    const col = lastCol - 2 + k;
+    xlMerge(ws, rr, col, rr + 3, col);
+    xlBox(ws, rr, col, rr + 3, col, thin);
+  }
+  for(let k = 0; k < 4; k++) ws.getRow(rr + k).height = 20;
+  if(primarySeal) ws.addImage(xlImage(wb, sealPngDataUrl(primarySeal)), { tl: { col: lastCol - 1 + 0.32, row: rr - 1 + 0.15 }, ext: { width: 72, height: 72 } });
+  return ws;
+}
+
+async function exportQuoteExcel(quote, opts){
+  const includeTrial = !!(opts && opts.includeTrial);
+  const ExcelJS = await loadExcelJS();
+  const s = Store.data.settings;
+  const wb = new ExcelJS.Workbook();
+  wb.creator = "見積書作成アプリ";
+  wb.created = new Date();
+  addQuoteWorksheet(wb, quote, s);
+  if(includeTrial) addTrialWorksheet(wb, quote, s);
+  const buf = await wb.xlsx.writeBuffer();
+  const dateStr = (quote.date || toDateInputValue(new Date())).replace(/-/g, "");
+  const firstCode = (quote.items && quote.items[0] && quote.items[0].code) ? quote.items[0].code.trim() : "";
+  let fileName = [dateStr, (quote.customerCompany || "").trim(), firstCode].filter(Boolean).join("_").replace(/[\\/:*?"<>|\r\n]/g, "_") || "見積書";
+  if(includeTrial) fileName += "_見積書＋新試算表";
+  downloadFile(fileName + ".xlsx", buf, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  return fileName + ".xlsx";
+}
+
+/* ==========================================================
    画面：見積書エディタ
    ========================================================== */
 const ViewEditor = {
@@ -2913,9 +3352,21 @@ const ViewEditor = {
 
   getQuote(){ return Store.data.quotes.find(q=>q.id===App.editingQuoteId); },
   previewHtml(q, s){
+    if(this.previewMode === "excel") return this.excelPanelHtml(q);
     return this.previewMode === "trial"
       ? renderQuoteSheetHTML(q, s) + renderTrialSheetHTML(q, s)
       : renderQuoteSheetHTML(q, s);
+  },
+  excelPanelHtml(q){
+    return `
+      <div class="excel-export-panel">
+        <h3>Excelファイルで出力</h3>
+        <p>印刷・PDFと同じ内容の見積書と新試算表を、1つのExcelファイル（.xlsx・2シート）で保存します。単価などは数値で入るので、Excel上で修正もできます。</p>
+        <div class="excel-export-actions">
+          <button type="button" class="btn primary" data-act="excel-quote-trial">📊 見積書＋新試算表をExcelで出力（2シート）</button>
+        </div>
+        ${this.isLocked(q) ? "" : `<p class="hint">※ 検印前の見積書です。検印欄は空欄のまま出力されます。</p>`}
+      </div>`;
   },
   isLocked(q){ return q.seals.some(Boolean); },
 
@@ -2949,7 +3400,7 @@ const ViewEditor = {
           <input type="number" data-f="unitPrice" value="${it.unitPrice}" placeholder="${it.priceWarning?"特価未登録":""}" ${locked?"disabled":""}>
           ${it.priceWarning?`<div class="hint" style="color:var(--color-danger);margin:2px 0 0;">${it.capacity}KG特価無し</div>`:""}
           ${it.calcCandidate?`<div class="hint" style="margin:2px 0 0;">${escapeHtml(it.calcCandidateLabel)}：${yen(it.calcCandidate)}${locked?"":` <button type="button" class="price-suggest-btn" data-act="apply-calc-candidate" style="width:auto;display:inline;padding:1px 6px;margin:0;">適用</button>`}</div>`:""}
-          ${(it.calcCandidates||[]).map((c,ci)=>`<div class="hint" style="margin:2px 0 0;">${escapeHtml(c.label)}：${yen(c.price)}${locked?"":` <button type="button" class="price-suggest-btn" data-act="apply-calc-candidate-multi" data-idx="${ci}" style="width:auto;display:inline;padding:1px 6px;margin:0;">適用</button>`}</div>`).join("")}
+          ${(!locked && (it.calcCandidates||[]).length) ? candidateSelectHtml(it.calcCandidates) : ""}
           ${showBigMark?`<div class="hint" style="margin:2px 0 0;"><button type="button" class="price-suggest-btn" data-act="calc-big" style="width:auto;display:inline;padding:1px 6px;margin:0;">${s.bigContainerKg}kgも算出</button></div>`:""}
           <label class="roundup-check">
             <input type="checkbox" data-act="roundup10" ${it.roundUp?"checked":""} ${locked?"disabled":""}> 10円単位切上げ
@@ -3071,6 +3522,7 @@ const ViewEditor = {
             <div class="preview-tabs">
               <button type="button" class="preview-tab-btn ${this.previewMode==="quote"?"active":""}" id="tab-preview-quote">見積書</button>
               <button type="button" class="preview-tab-btn ${this.previewMode==="trial"?"active":""}" id="tab-preview-trial">見積書＋新試算表</button>
+              <button type="button" class="preview-tab-btn ${this.previewMode==="excel"?"active":""}" id="tab-preview-excel">【Excel出力】</button>
             </div>
             <div class="preview-wrap" id="preview-wrap"><div id="preview-inner">${this.previewHtml(q, s)}</div></div>
           </div>
@@ -3097,8 +3549,29 @@ const ViewEditor = {
     document.getElementById("btn-print-quote-trial").addEventListener("click", ()=> this.printQuote(q, {includeTrial:true}));
     const attachBtn = document.getElementById("btn-attach-reply");
     if(attachBtn) attachBtn.addEventListener("click", ()=> this.attachToReplyDraft(q));
-    document.getElementById("tab-preview-quote").addEventListener("click", ()=>{ this.previewMode="quote"; this.updatePreview(); });
-    document.getElementById("tab-preview-trial").addEventListener("click", ()=>{ this.previewMode="trial"; this.updatePreview(); });
+    const setPreviewMode = (mode)=>{
+      this.previewMode = mode;
+      document.querySelectorAll(".preview-tab-btn").forEach(b=> b.classList.toggle("active", b.id === `tab-preview-${mode}`));
+      this.updatePreview();
+    };
+    document.getElementById("tab-preview-quote").addEventListener("click", ()=> setPreviewMode("quote"));
+    document.getElementById("tab-preview-trial").addEventListener("click", ()=> setPreviewMode("trial"));
+    document.getElementById("tab-preview-excel").addEventListener("click", ()=> setPreviewMode("excel"));
+    // Excel出力タブのボタン（プレビューは入力のたびに描き直されるので、外枠でまとめて受ける）
+    document.getElementById("preview-wrap").addEventListener("click", async (e)=>{
+      const btn = e.target.closest('[data-act="excel-quote-trial"]');
+      if(!btn) return;
+      btn.disabled = true;
+      try{
+        const name = await exportQuoteExcel(q, { includeTrial: true });
+        toast(`Excelファイル「${name}」を保存しました（ブラウザのダウンロードに保存されます）`);
+      }catch(err){
+        console.error(err);
+        toast("Excelファイルの作成に失敗しました：" + err.message, true);
+      }finally{
+        btn.disabled = false;
+      }
+    });
 
     if(locked){
       document.getElementById("btn-unlock").addEventListener("click", ()=>{
@@ -3190,7 +3663,11 @@ const ViewEditor = {
         });
       });
       const priceInput = tr.querySelector('input[data-f="unitPrice"]');
+      let priceAtFocus = null;
+      if(priceInput) priceInput.addEventListener("focus", ()=>{ priceAtFocus = q.items[i].unitPrice; });
       if(priceInput) priceInput.addEventListener("blur", ()=>{
+        const editedByHand = priceAtFocus !== null && q.items[i].unitPrice !== priceAtFocus;
+        priceAtFocus = null;
         let changed = false;
         if(q.items[i].roundUp){
           const rounded = roundUp100(q.items[i].unitPrice);
@@ -3202,6 +3679,11 @@ const ViewEditor = {
           }
         }
         if(this.autoAddSmallItem(q, i)){
+          this.touch(q);
+          App.render();
+          return;
+        }
+        if(editedByHand && this.syncSmallFromBase(q, i)){
           this.touch(q);
           App.render();
           return;
@@ -3236,9 +3718,10 @@ const ViewEditor = {
         this.touch(q);
         App.render();
       });
-      tr.querySelectorAll('[data-act="apply-calc-candidate-multi"]').forEach(applyMultiBtn=>{
-        applyMultiBtn.addEventListener("click", ()=>{
-          const idx = Number(applyMultiBtn.dataset.idx);
+      tr.querySelectorAll('[data-act="apply-calc-candidate-select"]').forEach(candSelect=>{
+        candSelect.addEventListener("change", ()=>{
+          if(candSelect.value === "") return;
+          const idx = Number(candSelect.value);
           const chosen = q.items[i].calcCandidates[idx];
           q.items[i].unitPrice = chosen.price;
           q.items[i].priceWarning = false;
@@ -3297,6 +3780,28 @@ const ViewEditor = {
     q.items.splice(itemIndex+1, 0, { code:src.code, name:src.name, capacity:s.smallContainerKg, unit:src.unit||"Kg", unitPrice:smallPrice, note:src.note||"(国内缶)" });
     toast(`${s.smallContainerKg}kgの単価（${yen(smallPrice)}）を自動算出して追加しました`);
     return true;
+  },
+
+  // 16KGの単価を手入力で訂正した時、同じ品番の4KGの行があれば、その単価も換算式で16KGに合わせて入れ直す
+  syncSmallFromBase(q, itemIndex){
+    const s = Store.data.settings;
+    const src = q.items[itemIndex];
+    if(!src || Number(src.capacity)!==s.baseContainerKg || !(Number(src.unitPrice)>0)) return false;
+    const smallPrice = roundUp10((src.unitPrice / s.baseContainerKg) * (s.smallContainerKg + s.smallAddKg) + s.smallAddFee);
+    const code = (src.code||"").trim();
+    let changed = 0, newPrice = smallPrice;
+    q.items.forEach(t=>{
+      if(t===src || (t.code||"").trim()!==code || Number(t.capacity)!==s.smallContainerKg) return;
+      newPrice = t.roundUp ? roundUp100(smallPrice) : smallPrice;
+      if(t.unitPrice === newPrice && !t.priceWarning) return;
+      t.unitPrice = newPrice;
+      if(t.roundUp) t.priceBeforeRoundUp = smallPrice;
+      t.priceWarning = false; t.appliedIndex = undefined; t.priceRef = undefined;
+      t.calcCandidate = undefined; t.calcCandidates = undefined;
+      changed++;
+    });
+    if(changed) toast(`${s.smallContainerKg}kgの単価も${s.baseContainerKg}kgに合わせて${yen(newPrice)}に変更しました`);
+    return changed > 0;
   },
 
   PP_DISPLAY_LIMIT: 200,
@@ -3481,7 +3986,7 @@ const ViewEditor = {
           <div class="field" style="margin-top:14px;">
             <label>原価（円/kg）を手入力して単価候補を計算</label>
             <div style="display:flex;gap:8px;align-items:center;">
-              <input type="number" step="1" id="manual-cost" style="width:140px;" placeholder="例：850">
+              <input type="number" step="1" id="manual-cost" style="width:140px;" placeholder="例：850" value="${item.manualCostPerKg ? escapeHtml(String(item.manualCostPerKg)) : ""}">
               <button class="btn small primary" id="btn-manual-cost-calc">計算</button>
             </div>
             <div id="manual-cost-result" style="margin-top:10px;"></div>

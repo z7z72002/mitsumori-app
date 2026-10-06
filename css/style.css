@@ -348,3 +348,30 @@ table.grid tbody tr:hover{ background:#fafbfc; }
   .trial-sheet{ page-break-before:always; break-before:page; }
   @page{ size:A4; margin:20mm 11mm 14mm 19mm; }
 }
+
+/* ---------- メールから見積書を作成 ---------- */
+.modal.wide.mail-import-modal{ max-width:980px; }
+.mail-drop-zone{ border:2px dashed var(--color-border-strong); border-radius:var(--radius); padding:34px 20px; text-align:center; display:flex; flex-direction:column; align-items:center; gap:8px; background:#fafbfc; transition:background .15s, border-color .15s; }
+.mail-drop-zone .big{ font-size:36px; line-height:1; }
+.mail-drop-zone.over{ border-color:var(--color-primary); background:var(--color-primary-tint); }
+body.mail-dragover #view-root{ outline:3px dashed var(--color-primary); outline-offset:-10px; background:var(--color-primary-tint); }
+.mi-error{ color:var(--color-danger); background:var(--color-primary-tint); border-radius:var(--radius-sm); padding:8px 12px; margin:0 0 12px; }
+.mi-paste{ margin-top:14px; }
+.mi-paste summary{ cursor:pointer; color:var(--color-navy); }
+.mi-paste textarea{ width:100%; box-sizing:border-box; margin:6px 0 8px; font-family:inherit; font-size:13px; }
+.mi-meta{ width:100%; border-collapse:collapse; margin-bottom:10px; }
+.mi-meta th{ width:84px; text-align:left; vertical-align:top; padding:5px 8px 5px 0; color:var(--color-text-sub); font-weight:normal; white-space:nowrap; }
+.mi-meta td{ padding:5px 0; }
+.mi-meta input[type="text"]{ width:100%; max-width:420px; box-sizing:border-box; }
+.mi-notes{ margin:0 0 10px; padding:8px 12px 8px 28px; background:var(--color-warn-tint); border-radius:var(--radius-sm); font-size:13px; }
+.mi-items td{ vertical-align:top; }
+.mi-items tr.off td{ opacity:.45; }
+.mi-items tr.off td:first-child{ opacity:1; }
+.mi-kgs{ white-space:nowrap; }
+.mi-kgs label{ margin-right:8px; }
+.mi-tag{ display:inline-block; font-size:12px; padding:1px 7px; border-radius:10px; background:#eef0f3; color:var(--color-text-sub); margin:1px 2px 1px 0; white-space:nowrap; }
+.mi-tag.ok{ background:var(--color-success-tint); color:var(--color-success); }
+.mi-tag.warn{ background:var(--color-warn-tint); color:var(--color-warn); }
+.mi-mailbody{ margin-top:12px; }
+.mi-mailbody summary{ cursor:pointer; color:var(--color-navy); }
+.mi-mailbody pre{ white-space:pre-wrap; font-family:inherit; font-size:12.5px; background:#fafbfc; border:1px solid var(--color-border); border-radius:var(--radius-sm); padding:10px; max-height:260px; overflow:auto; }.mi-tag.cond{ background:#e8eef7; color:var(--color-navy); }

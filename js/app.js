@@ -672,6 +672,21 @@ function findSpecialPriceEntry(code, client, capacityKg){
     hasRecordedPrice(x.specialPrice)
   );
 }
+/* 特価欄が空で、条件別の価格（特価マスタの特価1〜5・条件1〜5）が登録されている場合の価格候補。
+   UN缶指定ならUN缶、そうでなければ国内缶の価格を先頭にする */
+function findConditionalPriceCandidates(code, client, capacityKg, un){
+  const trimmedCode = (code||"").trim();
+  const row = Store.data.products.find(x=>
+    x.code.trim()===trimmedCode &&
+    (x.client||"")===(client||"") &&
+    Number(x.specialKg)===Number(capacityKg) &&
+    Array.isArray(x.alternatives) && x.alternatives.length
+  );
+  if(!row) return [];
+  const list = row.alternatives.map(a=>({ label: `条件付き価格（${a.condition || "特価欄空・条件付き"}）`, price: Number(a.price) }));
+  const first = un ? /UN/i : /国内/;
+  return list.sort((x, y)=> first.test(y.label) - first.test(x.label));
+}
 /* ---------- 硬化剤（基準容量4KG・小容量1KG）専用ロジック ---------- */
 function isHardener(p){
   if(typeof p === "string") return /硬化剤/.test(p);
@@ -1246,7 +1261,9 @@ function parseExcelFile(file){
    得意先コード,得意先名,製品コード(品番-Kg),製品名,備考,特価,条件選択,特価1..5,条件1..5,更新日,登録日,
    標準価格,改訂履歴1..5[日付/特価/備考],製品原価,... という、社内システムがそのまま出力する形式
    （パスワード保護されていても、上のdecryptProtectedXlsxで復号して読む）。 */
-const MASTER_COL = { client:1, code:2, name:3, note:4, specialPrice:5, cond4:14, standardPrice:19, rev3Date:26, rev3Price:27, costPerKg:35 };
+const MASTER_IMPORT_FORMAT = 2;   // 特価マスタから取り込む項目の版（2：条件別の価格 alternatives を追加）
+// altPrice1/altCond1：特価1・条件1（以降 特価2・条件2 … 特価5・条件5 が2列おきに並ぶ）
+const MASTER_COL = { client:1, code:2, name:3, note:4, specialPrice:5, altPrice1:7, altCond1:8, cond4:14, standardPrice:19, rev3Date:26, rev3Price:27, costPerKg:35 };
 function parseMasterExcelFile(file){
   return new Promise((resolve, reject)=>{
     const reader = new FileReader();
@@ -1303,7 +1320,7 @@ function mapMasterRowsToProducts(rows){
       note = noteParts.join(" / ");
     }
 
-    out.push({
+    const prod = {
       id: uid(),
       code,
       name: String(r[C.name]||"").trim(),
@@ -1313,7 +1330,18 @@ function mapMasterRowsToProducts(rows){
       costPerKg: Number(r[C.costPerKg]) || 0,
       standardPrice: Number(r[C.standardPrice]) || 0,
       note
-    });
+    };
+    // 特価欄が空の時の条件別の価格（特価1〜5・条件1〜5。例：国内缶 ¥15,530 / UN缶 ¥16,100）
+    if(isZero){
+      const alts = [];
+      for(let k=1; k<=5; k++){
+        const price = Number(r[C.altPrice1 + (k-1)*2]) || 0;
+        const condition = String(r[C.altCond1 + (k-1)*2]||"").trim();
+        if(price > 0) alts.push({ price, condition });
+      }
+      if(alts.length) prod.alternatives = alts;
+    }
+    out.push(prod);
   }
   return out;
 }
@@ -1430,7 +1458,8 @@ const App = {
       }
       const file = await fh.getFile();
       const last = Store.data.masterSync || {};
-      if(!opts.force && last.name === fh.name && last.lastModified === file.lastModified){
+      // format：取込む項目を増やした時に上げる（2 = 条件別の価格を追加）。古い形式で取込済みなら同じファイルでも取り込み直す
+      if(!opts.force && last.name === fh.name && last.lastModified === file.lastModified && last.format === MASTER_IMPORT_FORMAT){
         if(!opts.silent) toast(`最新の特価マスタ「${fh.name}」は取込済みです`);
         return;
       }
@@ -1443,7 +1472,7 @@ const App = {
         return;
       }
       Store.data.products = imported;
-      Store.data.masterSync = { name: fh.name, lastModified: file.lastModified, appliedAt: new Date().toISOString(), count: imported.length };
+      Store.data.masterSync = { name: fh.name, lastModified: file.lastModified, appliedAt: new Date().toISOString(), count: imported.length, format: MASTER_IMPORT_FORMAT };
       await Store.save();
       toast(`特価マスタ「${fh.name}」で商品データを更新しました（${imported.length.toLocaleString()}件）`);
       if(this.view === "products") this.render();
@@ -1588,6 +1617,660 @@ const App = {
 };
 
 /* ==========================================================
+   メールから見積書を作成
+   Outlookのメールをドラッグ（.msg）、保存した .msg / .eml、または本文の貼り付けから、
+   取引先・担当者・品番・容量・UN缶の指定を読み取り、確認画面を経て見積書を作る。
+   すべてブラウザ内で処理し、メールの内容はどこにも送らない。
+   ========================================================== */
+const MAIL_CODEPAGES = { 932:"shift_jis", 50220:"iso-2022-jp", 50221:"iso-2022-jp", 50222:"iso-2022-jp", 51932:"euc-jp", 20932:"euc-jp", 65001:"utf-8", 1252:"windows-1252", 20127:"us-ascii" };
+function decodeMailBytes(u8, charset){
+  let cs = String(charset||"utf-8").toLowerCase().trim().replace(/^["']|["']$/g, "");
+  if(/^(cp932|ms932|windows-31j|x-sjis|sjis|shift-jis)$/.test(cs)) cs = "shift_jis";
+  try{ return new TextDecoder(cs).decode(u8); }catch(e){ return new TextDecoder("utf-8").decode(u8); }
+}
+function mailHtmlToText(html){
+  if(typeof DOMParser === "undefined"){
+    return String(html).replace(/<(style|script)[\s\S]*?<\/\1>/gi, "").replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/(p|div|tr|li|h\d)>/gi, "\n").replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+  }
+  const doc = new DOMParser().parseFromString(String(html), "text/html");
+  doc.querySelectorAll("style,script,title").forEach(e=>e.remove());
+  doc.querySelectorAll("br").forEach(e=>e.replaceWith("\n"));
+  doc.querySelectorAll("p,div,tr,li,h1,h2,h3,h4,h5,h6,table").forEach(e=>e.append("\n"));
+  return (doc.body ? doc.body.textContent : "").replace(/ /g, " ").replace(/\n{3,}/g, "\n\n");
+}
+function bytesToBinaryString(u8){
+  let s = "";
+  for(let i=0; i<u8.length; i+=0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i+0x8000));
+  return s;
+}
+function binaryStringToBytes(s){
+  const u = new Uint8Array(s.length);
+  for(let i=0;i<s.length;i++) u[i] = s.charCodeAt(i) & 0xFF;
+  return u;
+}
+function base64ToBytes(s){ return binaryStringToBytes(atob(String(s).replace(/[^A-Za-z0-9+\/=]/g, ""))); }
+function quotedPrintableToBytes(s){
+  s = String(s).replace(/=\r?\n/g, "");
+  const out = [];
+  for(let i=0;i<s.length;i++){
+    if(s[i] === "=" && /^[0-9A-Fa-f]{2}$/.test(s.substr(i+1, 2))){ out.push(parseInt(s.substr(i+1, 2), 16)); i += 2; }
+    else out.push(s.charCodeAt(i) & 0xFF);
+  }
+  return new Uint8Array(out);
+}
+function decodeMimeWords(s){
+  return String(s||"").replace(/(=\?[^?]+\?[BbQq]\?[^?]*\?=)\s+(?==\?)/g, "$1").replace(/=\?([^?]+)\?([BbQq])\?([^?]*)\?=/g, (m, cs, enc, txt)=>{
+    try{
+      const bytes = enc.toUpperCase() === "B" ? base64ToBytes(txt) : quotedPrintableToBytes(txt.replace(/_/g, " "));
+      return decodeMailBytes(bytes, cs);
+    }catch(e){ return m; }
+  });
+}
+
+/* Outlook の .msg（複合ドキュメント形式）。読み込みには SheetJS に含まれる CFB を使う */
+function parseMsgFile(buf){
+  if(typeof XLSX === "undefined" || !XLSX.CFB) throw new Error("メール読み込み用の部品（xlsx.full.min.js）が読み込まれていません");
+  const cfb = XLSX.CFB.read(buf instanceof Uint8Array ? buf : new Uint8Array(buf), { type:"array" });
+  const streams = {};
+  cfb.FullPaths.forEach((p, i)=>{
+    const f = cfb.FileIndex[i];
+    if(f && f.type === 2) streams[p.replace(/^[^\/]*\//, "/").toUpperCase()] = f.content;   // "Root Entry/xxx" → "/XXX"
+  });
+  const u8 = c => c instanceof Uint8Array ? c : new Uint8Array(c || []);
+  const readProps = (prefix, headerSize)=>{
+    const props = {};
+    const ps = streams[`${prefix}/__PROPERTIES_VERSION1.0`];
+    if(!ps) return props;
+    const b = u8(ps);
+    const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+    for(let off=headerSize; off+16<=b.length; off+=16){
+      props[dv.getUint32(off, true) >>> 0] = { lo: dv.getUint32(off+8, true), hi: dv.getUint32(off+12, true) };
+    }
+    return props;
+  };
+  const props = readProps("", 32);
+  const cpProp = props[0x3FFD0003] || props[0x3FDE0003];
+  const ansi = (cpProp && MAIL_CODEPAGES[cpProp.lo]) || "shift_jis";
+  const str = (prefix, id)=>{
+    const w = streams[`${prefix}/__SUBSTG1.0_${id}001F`];
+    if(w) return decodeMailBytes(u8(w), "utf-16le").replace(/\0+$/, "");
+    const a = streams[`${prefix}/__SUBSTG1.0_${id}001E`];
+    if(a) return decodeMailBytes(u8(a), ansi).replace(/\0+$/, "");
+    return "";
+  };
+  const bin = (prefix, id)=> streams[`${prefix}/__SUBSTG1.0_${id}0102`];
+  if(!Object.keys(streams).some(k=>/^\/__SUBSTG1\.0_/.test(k))) throw new Error("Outlookのメール（.msg）として読み込めませんでした");
+
+  let body = str("", "1000");
+  if(!body.trim()){
+    const html = bin("", "1013");
+    if(html) body = mailHtmlToText(decodeMailBytes(u8(html), ansi));
+  }
+  const ft = props[0x0E060040] || props[0x00390040];
+  const date = ft ? new Date((ft.hi * 4294967296 + ft.lo) / 10000 - 11644473600000) : null;
+  const attachments = [];
+  const prefixes = new Set();
+  Object.keys(streams).forEach(k=>{ const m = /^(\/__ATTACH_VERSION1\.0_#[0-9A-F]{8})\//.exec(k); if(m) prefixes.add(m[1]); });
+  prefixes.forEach(pre=>{
+    const name = str(pre, "3707") || str(pre, "3704") || str(pre, "3001");
+    const data = bin(pre, "3701");
+    if(name) attachments.push({ name, data: data ? u8(data) : null });
+  });
+  return {
+    source: "msg",
+    subject: str("", "0037"),
+    fromName: str("", "0C1A") || str("", "0042"),
+    fromEmail: str("", "5D01") || str("", "0C1F") || str("", "0065"),
+    date: (date && !isNaN(date)) ? date : null,
+    body: body.replace(/\r\n?/g, "\n"),
+    attachments
+  };
+}
+
+/* .eml（MIME形式）。ISO-2022-JP・Shift_JIS・UTF-8、base64・quoted-printable に対応 */
+function parseEmlFile(buf){
+  const raw = bytesToBinaryString(buf instanceof Uint8Array ? buf : new Uint8Array(buf));
+  const result = { source:"eml", subject:"", fromName:"", fromEmail:"", date:null, body:"", attachments:[] };
+  let htmlBody = "";
+  const parseHeaders = text=>{
+    const h = {};
+    text.replace(/\r?\n[ \t]+/g, " ").split(/\r?\n/).forEach(line=>{
+      const i = line.indexOf(":");
+      if(i > 0) h[line.slice(0, i).trim().toLowerCase()] = line.slice(i+1).trim();
+    });
+    return h;
+  };
+  const param = (v, name)=>{ const m = new RegExp(`${name}\\*?=\\s*("([^"]*)"|[^;\\s]+)`, "i").exec(v||""); return m ? (m[2] != null ? m[2] : m[1]) : ""; };
+  const walk = (part, depth)=>{
+    const sep = /\r?\n\r?\n/.exec(part);
+    const headText = sep ? part.slice(0, sep.index) : part;
+    const bodyText = sep ? part.slice(sep.index + sep[0].length) : "";
+    const h = parseHeaders(headText);
+    if(depth === 0){
+      result.subject = decodeMimeWords(h["subject"]);
+      const from = decodeMimeWords(h["from"]);
+      const m = /^(.*?)\s*<([^>]+)>/.exec(from);
+      result.fromName = m ? m[1].replace(/^"|"$/g, "").trim() : "";
+      result.fromEmail = m ? m[2].trim() : from.trim();
+      const d = h["date"] ? new Date(h["date"]) : null;
+      result.date = (d && !isNaN(d)) ? d : null;
+    }
+    const ctype = (h["content-type"] || "text/plain").toLowerCase();
+    if(ctype.startsWith("multipart/")){
+      const boundary = param(h["content-type"], "boundary");
+      if(!boundary || depth > 8) return;
+      bodyText.split("--" + boundary).slice(1).forEach(sub=>{
+        if(/^--/.test(sub)) return;
+        walk(sub.replace(/^\r?\n/, ""), depth + 1);
+      });
+      return;
+    }
+    const enc = (h["content-transfer-encoding"] || "").toLowerCase();
+    const bytes = enc === "base64" ? base64ToBytes(bodyText) : enc === "quoted-printable" ? quotedPrintableToBytes(bodyText) : binaryStringToBytes(bodyText);
+    const fileName = decodeMimeWords(param(h["content-disposition"], "filename") || param(h["content-type"], "name"));
+    if(fileName || /attachment/i.test(h["content-disposition"] || "")){
+      result.attachments.push({ name: fileName || "添付ファイル", data: bytes });
+      return;
+    }
+    const charset = param(h["content-type"], "charset") || "iso-2022-jp";
+    if(ctype.startsWith("text/plain") && !result.body) result.body = decodeMailBytes(bytes, charset);
+    else if(ctype.startsWith("text/html") && !htmlBody) htmlBody = mailHtmlToText(decodeMailBytes(bytes, charset));
+  };
+  walk(raw, 0);
+  if(!result.body.trim()) result.body = htmlBody;
+  result.body = result.body.replace(/\r\n?/g, "\n");
+  return result;
+}
+
+/* 添付のExcel・CSV・テキストから文字を取り出す（品目表が添付で届く場合） */
+function readMailAttachmentText(att){
+  const name = att.name || "";
+  if(!att.data) return { text:"", note:`${name}（中身を読めませんでした）` };
+  try{
+    if(/\.(xlsx|xlsm|xls)$/i.test(name)){
+      const wb = XLSX.read(att.data, { type:"array" });
+      return { text: wb.SheetNames.map(n=>XLSX.utils.sheet_to_csv(wb.Sheets[n], { FS:"　" })).join("\n") };
+    }
+    if(/\.(csv|txt)$/i.test(name)){
+      let t = decodeMailBytes(att.data, "utf-8");
+      if(t.includes("�")) t = decodeMailBytes(att.data, "shift_jis");
+      return { text: t };
+    }
+  }catch(e){
+    return { text:"", note:`${name}（${/password|encrypt/i.test(String(e && e.message)) ? "パスワード付きのため読めません" : "読み込めませんでした"}）` };
+  }
+  return { text:"", note:`${name}（PDF・画像などは読み取れません。目で確認してください）` };
+}
+
+async function readMailFromFile(file){
+  const buf = new Uint8Array(await file.arrayBuffer());
+  const name = file.name || "";
+  // .msg は先頭が D0 CF 11 E0（複合ドキュメント）
+  if(buf.length > 8 && buf[0] === 0xD0 && buf[1] === 0xCF && buf[2] === 0x11 && buf[3] === 0xE0) return parseMsgFile(buf);
+  if(/\.eml$/i.test(name) || /^(Received|Return-Path|From|MIME-Version|Date|Subject|Message-ID|X-[\w-]+):/im.test(bytesToBinaryString(buf.subarray(0, 2000)))) return parseEmlFile(buf);
+  if(/\.(txt)$/i.test(name) || !name) return mailFromPastedText(decodeMailBytes(buf, "utf-8"));
+  throw new Error("Outlookのメール（.msg）か .eml ファイルをドロップしてください");
+}
+function mailFromPastedText(text){
+  return { source:"text", subject:"", fromName:"", fromEmail:"", date:null, body: String(text||"").replace(/\r\n?/g, "\n"), attachments:[] };
+}
+
+/* ---------- メール本文から見積依頼の内容を読み取る ---------- */
+const MAIL_KG_RE = /(\d+(?:\.\d+)?)\s*(?:kg|キロ|k)(?=[^a-z]|un|$)/gi;
+const MAIL_UN_RE = /(\d\s*(?:kg|k)\s*un(?![a-z])|un\s*(?:缶|容器|ペール|ﾍﾟｰﾙ|仕様|規格|ラベル)|輸出缶|輸出用|(?:^|[^a-z])un(?![a-z]))/i;
+const MAIL_DOMESTIC_RE = /国内缶|国内用|国内仕様/;
+const MAIL_EACH_RE = /各入目|各入り目|各荷姿|各容量|各入数/;
+function mailNormalizeLine(s){
+  return String(s||"").normalize("NFKC")
+    .replace(/(?<=[A-Za-z0-9])[ー‐‑–—―−](?=[A-Za-z0-9])/g, "-");
+}
+function mailCodeKey(s){ return mailNormalizeLine(s).toUpperCase().replace(/[\s　]/g, ""); }
+/* 返信・転送の引用より上（今回新しく書かれた部分）だけを取り出す */
+function mailNewPartLines(body){
+  const lines = String(body||"").split("\n");
+  const HEAD = /^\s*(From:\s|差出人:|送信者:)/i;
+  const cut = lines.findIndex((l, i)=> i > 0 && (
+    /^\s*(-{2,}\s*(Original Message|元のメッセージ|Forwarded message|転送メッセージ)|>|On .+wrote:\s*$|.+のメッセージ:\s*$)/i.test(l) || HEAD.test(l) ||
+    // 「______」の区切り線は、すぐ下が From:/差出人: の時だけ引用の始まりとみなす（署名の飾り線と区別）
+    (/^\s*_{8,}\s*$/.test(l) && HEAD.test(lines.slice(i+1).find(x=>x.trim()) || ""))));
+  return cut > 0 ? lines.slice(0, cut) : lines;
+}
+function mailClientCore(name){
+  return String(name||"").normalize("NFKC")
+    .replace(/株式会社|有限会社|合同会社|合資会社|\(株\)|\(有\)|㈱|㈲/g, " ")
+    .split(/[\s　]+/).filter(t=>t && !/(営業所|支店|支社|工場|出張所|事業所|センター|営業部|事業部|本社|本店)$/.test(t))
+    .join("").toLowerCase();
+}
+function mailClientBranches(name){
+  return (String(name||"").normalize("NFKC").match(/[^\s　]+?(?=(営業所|支店|支社|工場|出張所|事業所|センター|営業部|事業部)(?:[\s　]|$))/g) || [])
+    .map(b=>b.toLowerCase()).filter(b=>b.length >= 2);
+}
+/* 取引先の候補：特価/原価管理リストの取引先名（会社名の部分）がメールに書かれているもの。支店名も合えば上位にする */
+function guessMailClients(text){
+  const t = String(text||"").normalize("NFKC").toLowerCase().replace(/[\s　]/g, "");
+  const seen = new Set(), out = [];
+  for(const p of Store.data.products){
+    const c = (p.client || "").trim();
+    if(!c || seen.has(c)) continue;
+    seen.add(c);
+    if(/武蔵塗料/.test(c)) continue;
+    const core = mailClientCore(c);
+    if(core.length < 2 || !t.includes(core)) continue;
+    let score = core.length * 10;
+    const branches = mailClientBranches(c);
+    if(branches.length) score += branches.some(b=>t.includes(b)) ? 50 : -5;
+    out.push({ client: c, score });
+  }
+  out.sort((a, b)=> b.score - a.score || a.client.length - b.client.length);
+  return out;
+}
+function guessMailPerson(lines, fromName, client){
+  const core = mailClientCore(client);
+  const NG = /^(幸い|宜しく|よろしく|必要|可能|不要|以上|予定|大丈夫|問題|こちら|下記|以下|上記|ところ|もの|こと)$/;
+  for(const raw of lines.slice(0, 12)){
+    const l = mailNormalizeLine(raw).trim();
+    const m = /(?:の|[\s　、。]|^|社|店|所)([一-龯々]{1,4}|[ァ-ヶー]{2,8}|[ぁ-ん]{2,6})\s*(?:でございます|です)[。.!！]?/.exec(l);
+    if(m && !NG.test(m[1]) && (core ? mailClientCore(l).includes(core) || /会社|㈱|\(株\)|の/.test(l) : true)) return m[1];
+  }
+  const sig = guessMailSignature(lines, client);
+  if(sig.person) return sig.person;
+  const fn = mailNormalizeLine(fromName).trim();
+  if(/[一-龯ぁ-んァ-ヶ]/.test(fn)){
+    const tokens = fn.replace(/株式会社|有限会社|㈱/g, " ").split(/[\s　\/／]+/).filter(t=>/^[一-龯々]{1,4}$/.test(t) && (!core || !mailClientCore(t).includes(core)));
+    // 差出人名の漢字部分（例「株式会社スリードリーム 金野」→ 金野、「Matsuda / 松田頼人」→ 松田頼人）
+    if(tokens.length) return tokens[0];
+  }
+  return "";
+}
+/* 署名（本文の末尾側）から会社名と担当者名を探す。「株式会社 大川　大川洋介」「株式会社スリードリーム（改行）齋藤」など */
+function guessMailSignature(lines, client){
+  const core = mailClientCore(client);
+  const LEGAL = /株式会社|有限会社|合同会社|㈱|\(株\)/;
+  const isName = t=> /^[一-龯々]{1,6}$/.test(t);
+  for(let i=lines.length-1; i>=0; i--){
+    const l = mailNormalizeLine(lines[i]).trim();
+    if(!l || /武蔵塗料/.test(l)) continue;
+    if(!((core && mailClientCore(l).includes(core)) || LEGAL.test(l))) continue;
+    if(/様|御中|お世話/.test(l)) continue;
+    const tokens = l.split(/[\s　]+/).filter(Boolean);
+    const company = tokens.filter(t=> LEGAL.test(t) || (core && mailClientCore(t) === core) || /(営業所|支店|支社|工場|本部|営業部)$/.test(t) || t === "株式会社").join(" ");
+    const rest = tokens.filter(t=> !LEGAL.test(t) && !(core && mailClientCore(t) === core) && t !== "株式会社");
+    let person = rest.find(isName) || "";
+    if(!person){
+      for(let j=i+1, seen=0; j<lines.length && seen<3; j++){
+        const n = mailNormalizeLine(lines[j]).trim();
+        if(!n) continue;
+        seen++;
+        const m = /^([一-龯々]{1,4})(?:[\s　]+[一-龯々ぁ-ん]{1,4})?$/.exec(n);
+        if(m){ person = m[1]; break; }
+      }
+    }
+    return { company: company || l, person };
+  }
+  return { company:"", person:"" };
+}
+function mailKgsOf(text){
+  const kgs = [];
+  let m;
+  MAIL_KG_RE.lastIndex = 0;
+  while((m = MAIL_KG_RE.exec(text))){
+    const v = Number(m[1]);
+    if(v > 0 && v <= 30 && !kgs.includes(v)) kgs.push(v);
+  }
+  return kgs;
+}
+function analyzeQuoteMail(mail){
+  const s = Store.data.settings;
+  const registry = new Map();
+  for(const p of Store.data.products){
+    const k = mailCodeKey(p.code);
+    if(k && !registry.has(k)) registry.set(k, p);
+  }
+  const resolve = token=>{
+    if(registry.has(token)) return { key: token };
+    const m = /^(.*)-(\d{1,2})$/.exec(token);
+    if(m && registry.has(m[1])) return { key: m[1], kg: Number(m[2]) };
+    if(!token.startsWith("EC-") && registry.has("EC-" + token)) return { key: "EC-" + token };
+    if(token.startsWith("EC-") && registry.has(token.slice(3))) return { key: token.slice(3) };
+    return null;
+  };
+  const notes = [];
+  const extraTexts = [];
+  (mail.attachments || []).forEach(att=>{
+    const r = readMailAttachmentText(att);
+    if(r.text) extraTexts.push(...r.text.split("\n"));
+    if(r.note) notes.push("添付：" + r.note);
+  });
+  const newLines = mailNewPartLines(mail.body);
+  const lines = [mail.subject || "", ...newLines, ...extraTexts];
+  const items = [];
+  const globalKgs = [];
+  let globalUn = false, globalDomestic = false, globalEach = false;
+  for(const raw of lines){
+    const line = mailNormalizeLine(raw);
+    const upper = line.toUpperCase();
+    const tokens = upper.match(/[A-Z0-9]+(?:-[A-Z0-9]+)+/g) || [];
+    const found = [];
+    let rest = line;
+    const cut = t=>{ rest = rest.replace(new RegExp(t.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&"), "i"), " "); };
+    const unknownTokens = [];
+    for(const t of tokens){
+      const r = resolve(t);
+      if(r){ found.push({ product: registry.get(r.key), kg: r.kg }); cut(t); }
+      else unknownTokens.push(t);
+    }
+    // 品名（登録名）は品番・容量・UNの判定から外す（品名の中の「PT-1698-N」や「BLACK UNDER」等の誤判定を防ぐ）
+    const names = found.map(f=>mailCodeKey(f.product.name)).filter(Boolean);
+    found.forEach(f=>{ if(f.product.name) rest = rest.split(mailNormalizeLine(f.product.name)).join(" "); });
+    for(const t of unknownTokens){
+      if(names.some(n=>n.includes(t))) { cut(t); continue; }
+      if(/^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+$/.test(t) && t.length >= 7 && /\d{3,}/.test(t) && !/^(TEL|FAX|ISO|JIS|NO)-/.test(t)){
+        found.push({ unknown: t }); cut(t);
+      }
+    }
+    if(!found.length){
+      mailKgsOf(line).forEach(k=>{ if(!globalKgs.includes(k)) globalKgs.push(k); });
+      if(MAIL_UN_RE.test(line)) globalUn = true;
+      if(MAIL_DOMESTIC_RE.test(line)) globalDomestic = true;
+      if(MAIL_EACH_RE.test(line)) globalEach = true;
+      continue;
+    }
+    const lineKgs = mailKgsOf(rest);
+    const lineUn = MAIL_UN_RE.test(rest) ? true : MAIL_DOMESTIC_RE.test(rest) ? false : null;
+    const lineEach = MAIL_EACH_RE.test(rest);
+    // 未登録の品番は、お客様が書いた品名（行の残り）を品名にする
+    const writtenName = rest.replace(/^[\s\d)）.．、:：・*＊]+/, "").split(/※|。|\(|（|塗料名/)[0]
+      .replace(MAIL_KG_RE, "").replace(/[、,]\s*$/, "").trim().slice(0, 40);
+    for(const f of found){
+      const code = f.product ? f.product.code.trim() : f.unknown;
+      let it = items.find(x=>x.code === code);
+      if(!it){
+        it = { code, name: f.product ? f.product.name : (found.length === 1 ? writtenName : ""), registered: !!f.product, kgs: [], un: lineUn, explicitKgs: false, each: lineEach };
+        items.push(it);
+      }
+      const kgs = f.kg ? [f.kg] : lineKgs;
+      if(kgs.length){ it.explicitKgs = true; kgs.forEach(k=>{ if(!it.kgs.includes(k)) it.kgs.push(k); }); }
+      if(lineUn !== null) it.un = lineUn;
+      if(lineEach) it.each = true;
+    }
+  }
+  const defaultKgs = globalEach ? [s.baseContainerKg, s.smallContainerKg] : (globalKgs.length ? globalKgs : [s.baseContainerKg]);
+  items.forEach(it=>{
+    if(!it.explicitKgs) it.kgs = it.each ? [s.baseContainerKg, s.smallContainerKg] : defaultKgs.slice();
+    if(it.un === null) it.un = globalUn && !globalDomestic;
+    it.checked = it.registered;
+  });
+  const clientText = [mail.fromName, ...newLines].join("\n");
+  let clients = guessMailClients(clientText);
+  if(!clients.length) clients = guessMailClients([mail.fromName, mail.body].join("\n"));
+  let client = clients.length ? clients[0].client : "";
+  if(!client){
+    // 特価/原価管理リストに無い取引先（直販のお客様など）は、署名の会社名を入れておく
+    client = guessMailSignature(newLines, "").company;
+    if(client) notes.push(`取引先「${client}」は特価/原価管理リストに無いため、特価は入りません（署名から読み取り）。`);
+  }
+  const person = guessMailPerson(newLines, mail.fromName, client);
+  if(!items.length) notes.push("品番が見つかりませんでした。品番が登録済みか、本文の書き方を確認してください。");
+  if(items.some(it=>!it.registered)) notes.push("未登録の品番があります（新規品番の可能性）。必要ならチェックして追加し、単価を手入力してください。");
+  return { clients, client, person, un: globalUn && !globalDomestic, items, notes, defaultKgs };
+}
+
+/* 読み取った1品番を見積書の品目にする（単価は特価/原価管理リストから。無ければ0円＋価格候補） */
+function buildQuoteItemsFromMail(code, name, client, kgs, un){
+  const s = Store.data.settings;
+  const products = Store.data.products.filter(p=>p.code.trim() === code);
+  const product = products.find(p=>(p.client||"") === client) || products[0] || null;
+  const unit = unitForName(name || (product && product.name) || "");
+  const note = un ? "(UN缶)" : "(国内缶)";
+  const lineMatch = matchLineCode(code, Store.data.lineCodes);
+  const cost = product ? Number(product.costPerKg) || 0 : 0;
+  const all = cost > 0 ? calcPriceCandidates(cost, s, lineMatch ? lineMatch.newIndex : null) : null;
+  const baseSpecial = findSpecialPriceEntry(code, client, s.baseContainerKg);
+  return kgs.slice().sort((a, b)=> b - a).map(kg=>{
+    const item = { code, name: name || (product && product.name) || "", capacity: kg, unit, unitPrice: 0, note };
+    const sp = client ? findSpecialPriceEntry(code, client, kg) : null;
+    if(sp){
+      item.unitPrice = Number(sp.specialPrice);
+      item.priceRef = { label: "特価マスタ登録特価", price: item.unitPrice };
+      return item;
+    }
+    item.priceWarning = true;
+    const cands = findConditionalPriceCandidates(code, client, kg, un);
+    if(kg === s.smallContainerKg && baseSpecial){
+      cands.push({ label: `${s.baseContainerKg}KG特価より算出`, price: roundUp10((Number(baseSpecial.specialPrice) / s.baseContainerKg) * (s.smallContainerKg + s.smallAddKg) + s.smallAddFee) });
+    }
+    const bucket = kg === s.baseContainerKg ? "base" : kg === s.smallContainerKg ? "small" : kg === s.bigContainerKg ? "big" : null;
+    if(all && bucket){
+      const minPrice = getMinPrice(product, lineMatch, kg, s);
+      all[bucket].slice().sort((x, y)=> (y.recommended - x.recommended) || (x.index - y.index)).forEach(c=>{
+        const approval = approvalLevel(c.index, s);
+        let label = `原価${cost}円/kg×指数${c.index}`;
+        if(c.recommended) label += "（推奨・新指数）";
+        if(approval) label += `【${approval}】`;
+        if(minPrice && c.price < minPrice) label += `【最低価格${minPrice}円未満】`;
+        cands.push({ label, price: c.price });
+      });
+    }
+    findSimilarClientPriceCandidates(code, kg, client).forEach(c=>cands.push(c));
+    if(cands.length) item.calcCandidates = cands;
+    return item;
+  });
+}
+
+function mailReplyText(q){
+  const to = q.customerPerson ? `${q.customerCompany}　${q.customerPerson}様` : `${q.customerCompany}　御中`;
+  return `${to}\n\nいつもお世話になっております。\n武蔵塗料の　　　です。\n\n御見積書を添付致しましたので、ご確認の程宜しくお願い致します。\n\n何卒、宜しくお願い致します。\n`;
+}
+async function copyTextToClipboard(text){
+  try{ await navigator.clipboard.writeText(text); return true; }
+  catch(e){
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    let ok = false;
+    try{ ok = document.execCommand("copy"); }catch(e2){}
+    ta.remove();
+    return ok;
+  }
+}
+
+const MailImport = {
+  /* 確認画面を開く。file / text のどちらかを渡すと、すぐ読み込む */
+  open(initial){
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.innerHTML = `
+      <div class="modal wide mail-import-modal">
+        <div class="modal-head"><h2>📧 メールから見積書を作成</h2><button class="modal-close">×</button></div>
+        <div class="modal-body" id="mi-body"></div>
+        <div class="modal-foot">
+          <button class="btn" id="mi-cancel">キャンセル</button>
+          <button class="btn primary" id="mi-create" disabled>この内容で見積書を作成</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const close = ()=> overlay.remove();
+    overlay.querySelector(".modal-close").addEventListener("click", close);
+    overlay.querySelector("#mi-cancel").addEventListener("click", close);
+    const body = overlay.querySelector("#mi-body");
+    const createBtn = overlay.querySelector("#mi-create");
+    const state = { mail: null, result: null };
+    // 確認画面のどこに落としても読み込む（ブラウザがファイルを開いてしまうのを防ぐ）
+    overlay.addEventListener("dragover", e=>{ e.preventDefault(); });
+    overlay.addEventListener("drop", e=>{ e.preventDefault(); MailImport.handleDataTransfer(e.dataTransfer, f=>loadFile(f), t=>loadText(t)); });
+
+    const showPicker = (errorMsg)=>{
+      createBtn.disabled = true;
+      body.innerHTML = `
+        ${errorMsg ? `<p class="mi-error">${escapeHtml(errorMsg)}</p>` : ""}
+        <div class="mail-drop-zone" id="mi-drop">
+          <div class="big">📧</div>
+          <div><strong>Outlookのメールをここにドラッグ</strong>してください</div>
+          <div class="hint">保存したメール（.msg / .eml）も使えます</div>
+          <button type="button" class="btn" id="mi-pick">ファイルを選ぶ</button>
+          <input type="file" id="mi-file" accept=".msg,.eml,.txt" style="display:none;">
+        </div>
+        <details class="mi-paste">
+          <summary>ドラッグできない場合：メール本文を貼り付けて読み込む</summary>
+          <p class="hint">新しいOutlookやWeb版では、メールを開いて本文（署名まで）をコピーし、ここに貼り付けてください。</p>
+          <textarea id="mi-text" rows="8" placeholder="ここにメール本文を貼り付け"></textarea>
+          <button type="button" class="btn primary" id="mi-read-text">貼り付けた本文を読み込む</button>
+        </details>`;
+      const drop = body.querySelector("#mi-drop");
+      const fileInput = body.querySelector("#mi-file");
+      body.querySelector("#mi-pick").addEventListener("click", ()=> fileInput.click());
+      fileInput.addEventListener("change", ()=>{ if(fileInput.files[0]) loadFile(fileInput.files[0]); });
+      drop.addEventListener("dragover", e=>{ e.preventDefault(); drop.classList.add("over"); });
+      drop.addEventListener("dragleave", ()=> drop.classList.remove("over"));
+      drop.addEventListener("drop", e=>{
+        e.preventDefault(); e.stopPropagation(); drop.classList.remove("over");
+        MailImport.handleDataTransfer(e.dataTransfer, loadFile, loadText);
+      });
+      body.querySelector("#mi-read-text").addEventListener("click", ()=>{
+        const t = body.querySelector("#mi-text").value;
+        if(!t.trim()){ toast("本文を貼り付けてください", true); return; }
+        loadText(t);
+      });
+    };
+    const loadFile = async file=>{
+      body.innerHTML = `<p class="hint">「${escapeHtml(file.name || "メール")}」を読み込んでいます…</p>`;
+      try{ show(await readMailFromFile(file)); }
+      catch(err){ console.error(err); showPicker(err.message || String(err)); }
+    };
+    const loadText = text=>{
+      try{ show(mailFromPastedText(text)); }
+      catch(err){ console.error(err); showPicker(err.message || String(err)); }
+    };
+    const show = mail=>{
+      state.mail = mail;
+      state.result = analyzeQuoteMail(mail);
+      render();
+    };
+    const statusOf = (it, client)=>{
+      if(!it.registered) return `<span class="mi-tag warn">未登録（新規品番の可能性）</span>`;
+      const tags = it.kgs.map(kg=>{
+        const sp = client ? findSpecialPriceEntry(it.code, client, kg) : null;
+        if(sp) return `<span class="mi-tag ok">${kg}kg 特価 ${yen(sp.specialPrice)}</span>`;
+        const cond = client ? findConditionalPriceCandidates(it.code, client, kg, it.un) : [];
+        if(cond.length) return `<span class="mi-tag cond" title="${escapeHtml(cond.map(c=>c.label.replace(/^条件付き価格/, "") + " " + yen(c.price)).join(" / "))}">${kg}kg 条件付き ${yen(cond[0].price)}${escapeHtml(cond[0].label.replace(/^条件付き価格/, ""))}</span>`;
+        return `<span class="mi-tag">${kg}kg 単価未登録</span>`;
+      });
+      return tags.join(" ");
+    };
+    const render = ()=>{
+      const { mail, result } = state;
+      const s = Store.data.settings;
+      const kgOptions = it=> Array.from(new Set([s.smallContainerKg, s.baseContainerKg, s.bigContainerKg, ...it.kgs])).sort((a, b)=> a - b);
+      const clientOptions = result.clients.slice(0, 15).map(c=>`<option value="${escapeHtml(c.client)}" ${c.client === result.client ? "selected" : ""}>${escapeHtml(c.client)}</option>`).join("");
+      body.innerHTML = `
+        <table class="mi-meta">
+          <tr><th>差出人</th><td>${escapeHtml(mail.fromName || "")} ${mail.fromEmail ? `&lt;${escapeHtml(mail.fromEmail)}&gt;` : ""}${mail.source === "text" ? "（貼り付けた本文）" : ""}</td></tr>
+          ${mail.subject ? `<tr><th>件名</th><td>${escapeHtml(mail.subject)}${mail.date ? `（${mail.date.getMonth()+1}/${mail.date.getDate()} ${String(mail.date.getHours()).padStart(2,"0")}:${String(mail.date.getMinutes()).padStart(2,"0")}）` : ""}</td></tr>` : ""}
+          <tr><th>取引先</th><td>
+            <input type="text" id="mi-client" list="mi-client-list" value="${escapeHtml(result.client)}" placeholder="取引先名（特価/原価管理リストの取引先名）">
+            <datalist id="mi-client-list">${clientOptions}</datalist>
+            ${result.clients.length > 1 ? `<div class="hint">候補 ${result.clients.length} 件（入力欄をクリックすると一覧が出ます）</div>` : result.clients.length ? "" : `<div class="hint">メールから取引先を特定できませんでした。入力してください。</div>`}
+          </td></tr>
+          <tr><th>ご担当者</th><td><input type="text" id="mi-person" value="${escapeHtml(result.person)}" placeholder="空欄なら「御中」"></td></tr>
+          <tr><th>缶</th><td>
+            <label><input type="radio" name="mi-can" value="un" ${result.un ? "checked" : ""}> UN缶</label>
+            <label style="margin-left:14px;"><input type="radio" name="mi-can" value="domestic" ${result.un ? "" : "checked"}> 国内缶</label>
+            <span class="hint" style="margin-left:10px;">${result.un ? "本文に「UN」の指定があります" : "UNの指定はありません"}（品目ごとに変更可）</span>
+          </td></tr>
+        </table>
+        ${result.notes.length ? `<ul class="mi-notes">${result.notes.map(n=>`<li>${escapeHtml(n)}</li>`).join("")}</ul>` : ""}
+        <table class="grid mi-items">
+          <thead><tr><th style="width:34px;"></th><th>品番 / 品名</th><th>容量</th><th>缶</th><th>単価の状況（取引先の特価）</th></tr></thead>
+          <tbody>${result.items.map((it, i)=>`
+            <tr data-i="${i}" class="${it.checked ? "" : "off"}">
+              <td><input type="checkbox" data-f="checked" ${it.checked ? "checked" : ""}></td>
+              <td><strong>${escapeHtml(it.code)}</strong>${it.name ? `<div class="hint" style="margin:0;">${escapeHtml(it.name)}</div>` : ""}</td>
+              <td class="mi-kgs">${kgOptions(it).map(kg=>`<label><input type="checkbox" data-f="kg" value="${kg}" ${it.kgs.includes(kg) ? "checked" : ""}>${kg}kg</label>`).join("")}</td>
+              <td><select data-f="un"><option value="un" ${it.un ? "selected" : ""}>UN缶</option><option value="domestic" ${it.un ? "" : "selected"}>国内缶</option></select></td>
+              <td class="mi-status">${statusOf(it, result.client)}</td>
+            </tr>`).join("") || `<tr><td colspan="5" style="text-align:center;color:#888;padding:16px;">品番が見つかりませんでした</td></tr>`}
+          </tbody>
+        </table>
+        <details class="mi-mailbody"><summary>メール本文を見る（読み取り元）</summary><pre>${escapeHtml(mailNewPartLines(mail.body).join("\n"))}</pre></details>
+        <p style="margin-top:10px;"><button type="button" class="btn ghost small" id="mi-other">別のメールを読み込む</button></p>`;
+      const refreshStatus = ()=>{
+        body.querySelectorAll(".mi-items tbody tr[data-i]").forEach(tr=>{
+          const it = result.items[Number(tr.dataset.i)];
+          tr.querySelector(".mi-status").innerHTML = statusOf(it, result.client);
+          tr.classList.toggle("off", !it.checked);
+        });
+        createBtn.disabled = !result.items.some(it=>it.checked && it.kgs.length);
+      };
+      body.querySelector("#mi-client").addEventListener("input", e=>{ result.client = e.target.value.trim(); refreshStatus(); });
+      body.querySelector("#mi-person").addEventListener("input", e=>{ result.person = e.target.value.trim(); });
+      body.querySelectorAll('input[name="mi-can"]').forEach(r=> r.addEventListener("change", ()=>{
+        result.un = r.value === "un";
+        result.items.forEach(it=>{ it.un = result.un; });
+        body.querySelectorAll('.mi-items select[data-f="un"]').forEach(sel=>{ sel.value = result.un ? "un" : "domestic"; });
+      }));
+      body.querySelector(".mi-items").addEventListener("change", e=>{
+        const tr = e.target.closest("tr[data-i]");
+        if(!tr) return;
+        const it = result.items[Number(tr.dataset.i)];
+        const f = e.target.dataset.f;
+        if(f === "checked") it.checked = e.target.checked;
+        else if(f === "kg"){
+          const kg = Number(e.target.value);
+          it.kgs = e.target.checked ? Array.from(new Set([...it.kgs, kg])) : it.kgs.filter(k=>k !== kg);
+          if(e.target.checked) it.checked = true, tr.querySelector('[data-f="checked"]').checked = true;
+        }
+        else if(f === "un") it.un = e.target.value === "un";
+        refreshStatus();
+      });
+      body.querySelector("#mi-other").addEventListener("click", ()=> showPicker());
+      refreshStatus();
+    };
+
+    createBtn.addEventListener("click", ()=>{
+      const { mail, result } = state;
+      if(!result) return;
+      const client = (body.querySelector("#mi-client") || {}).value ? body.querySelector("#mi-client").value.trim() : result.client;
+      const person = (body.querySelector("#mi-person") || {}).value != null ? body.querySelector("#mi-person").value.trim() : result.person;
+      const items = [];
+      result.items.filter(it=>it.checked && it.kgs.length).forEach(it=>{
+        items.push(...buildQuoteItemsFromMail(it.code, it.name, client, it.kgs, it.un));
+      });
+      if(!items.length){ toast("見積書に入れる品目を選んでください", true); return; }
+      const now = new Date().toISOString();
+      const q = {
+        id: uid(), number: "", date: toDateInputValue(new Date()),
+        customerCompany: client, customerPerson: person, officeIndex: 0, theme: "",
+        deliveryDate: "従来通り", deliveryPlace: "従来通り", tradeTerms: "従来通り", validPeriod: "発行後6カ月間",
+        items, remarks: DEFAULT_REMARKS, toning: DEFAULT_TONING, toningEnabled: true, trialSheetNote: "", freightNotes: DEFAULT_FREIGHT.slice(),
+        seals: [null,null,null], deletedAt: null, createdAt: now, updatedAt: now,
+        sourceMail: { subject: mail.subject || "", fromName: mail.fromName || "", fromEmail: mail.fromEmail || "", date: mail.date ? mail.date.toISOString() : "" }
+      };
+      Store.data.quotes.push(q);
+      Store.save();
+      close();
+      App.go("editor", { quoteId: q.id });
+      const undecided = items.filter(it=>!(it.unitPrice > 0)).length;
+      toast(`メールから見積書を作成しました（${items.length}品目${undecided ? `・単価未決定 ${undecided}品目` : ""}）`, undecided > 0);
+    });
+
+    if(initial && initial.file) loadFile(initial.file);
+    else if(initial && initial.text) loadText(initial.text);
+    else showPicker();
+  },
+
+  /* ドロップされたものを読む。Outlook（従来版）はメールが .msg ファイルとして渡る。ファイルが無ければ文字として読む */
+  handleDataTransfer(dt, onFile, onText){
+    const file = dt && dt.files && dt.files[0];
+    if(file){ onFile(file); return true; }
+    const text = dt ? (dt.getData("text/plain") || "") : "";
+    if(text.trim()){ onText(text); return true; }
+    toast("メールを読み取れませんでした。メールを .msg で保存してドロップするか、本文を貼り付けてください", true);
+    return false;
+  }
+};
+
+/* ==========================================================
    画面：見積書一覧
    ========================================================== */
 const ViewQuotes = {
@@ -1673,7 +2356,8 @@ const ViewQuotes = {
                ${(FS_ACCESS_SUPPORTED && this.autoImportHandle)?`<button class="btn" id="btn-run-autoimport">今すぐ取込む</button>`:""}
                <button class="btn" id="btn-export-quotes">見積書をエクスポート</button>
                <button class="btn" id="btn-import-quotes">見積書をインポート</button>
-               <button class="btn primary" id="btn-new-quote">＋ 新規見積書を作成</button>`}
+               <button class="btn primary" id="btn-new-quote">＋ 新規見積書を作成</button>
+               <button class="btn primary" id="btn-mail-quote" title="Outlookのメールをこのボタン（または一覧の画面）にドラッグするか、クリックして読み込みます">📧 メールから作成</button>`}
         </div>
       </div>
       <div class="card">
@@ -1704,6 +2388,29 @@ const ViewQuotes = {
       Store.save();
       App.go("editor", { quoteId: q.id });
     });
+
+    // メールから作成：ボタンのクリック、またはボタン・一覧画面へのドラッグ＆ドロップ
+    const mailBtn = document.getElementById("btn-mail-quote");
+    if(mailBtn) mailBtn.addEventListener("click", ()=> MailImport.open());
+    if(!this._mailDropBound){
+      this._mailDropBound = true;
+      // 画面全体で受ける（ヘッダー等に落としてもブラウザがファイルを開いてしまわないように）
+      const root = document;
+      const active = ()=> App.view === "quotes" && !this.showTrash && !document.querySelector(".modal-overlay");
+      root.addEventListener("dragover", e=>{
+        if(!active() || !e.dataTransfer) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+        document.body.classList.add("mail-dragover");
+      });
+      root.addEventListener("dragleave", e=>{ if(!e.relatedTarget) document.body.classList.remove("mail-dragover"); });
+      root.addEventListener("drop", e=>{
+        document.body.classList.remove("mail-dragover");
+        if(!active()) return;
+        e.preventDefault();
+        MailImport.handleDataTransfer(e.dataTransfer, file=> MailImport.open({ file }), text=> MailImport.open({ text }));
+      });
+    }
 
     const trashBtn = document.getElementById("btn-show-trash");
     if(trashBtn) trashBtn.addEventListener("click", ()=>{ this.showTrash = true; this.selectedIds.clear(); App.render(); });
@@ -3426,6 +4133,7 @@ const ViewEditor = {
           <button class="btn ghost" id="btn-back">← 一覧に戻る</button>
           <button class="btn primary" id="btn-print-quote">🖨 ①見積書を印刷/PDF保存</button>
           <button class="btn primary" id="btn-print-quote-trial">🖨 ②見積書＋新試算表を印刷/PDF保存</button>
+          ${q.sourceMail ? `<button class="btn" id="btn-copy-reply" title="お客様への返信メールの文面をコピーします（「武蔵塗料の　　です」にお名前を入れてお使いください）">✉ 返信文をコピー</button>` : ""}
           ${locked && FS_ACCESS_SUPPORTED ? `<button class="btn primary" id="btn-attach-reply" title="検印済みの見積書をPDFにして、お客様への返信下書き（Outlook）に添付し、その下書きを開きます">📎 返信下書きにPDFを添付</button>` : ""}
         </div>
       </div>
@@ -3549,6 +4257,11 @@ const ViewEditor = {
     document.getElementById("btn-print-quote-trial").addEventListener("click", ()=> this.printQuote(q, {includeTrial:true}));
     const attachBtn = document.getElementById("btn-attach-reply");
     if(attachBtn) attachBtn.addEventListener("click", ()=> this.attachToReplyDraft(q));
+    const copyReplyBtn = document.getElementById("btn-copy-reply");
+    if(copyReplyBtn) copyReplyBtn.addEventListener("click", async ()=>{
+      const ok = await copyTextToClipboard(mailReplyText(q));
+      toast(ok ? "返信文をコピーしました。Outlookの返信画面に貼り付け、お名前を入れてPDFを添付してください" : "コピーできませんでした", !ok);
+    });
     const setPreviewMode = (mode)=>{
       this.previewMode = mode;
       document.querySelectorAll(".preview-tab-btn").forEach(b=> b.classList.toggle("active", b.id === `tab-preview-${mode}`));
@@ -3804,6 +4517,13 @@ const ViewEditor = {
     return changed > 0;
   },
 
+  // 単価未登録の品目に、特価マスタの条件別の価格（国内缶／UN缶など）を価格候補として先頭に付ける
+  addConditionalCandidates(it, p, cap){
+    if(!it || !it.priceWarning) return;
+    const cands = findConditionalPriceCandidates(p.code, p.client, cap, /UN/i.test(it.note || ""));
+    if(cands.length) it.calcCandidates = cands.concat(it.calcCandidates || []);
+  },
+
   PP_DISPLAY_LIMIT: 200,
   openProductPicker(q){
     const overlay = document.createElement("div");
@@ -3923,9 +4643,10 @@ const ViewEditor = {
             baseItem.calcCandidate = roundUp10((smallMatch.specialPrice - s.smallAddFee) / (s.smallContainerKg + s.smallAddKg) * s.baseContainerKg);
             baseItem.calcCandidateLabel = `${s.smallContainerKg}KG特価より算出`;
           }
+          const bigConds = bigMatch ? [] : findConditionalPriceCandidates(p.code, p.client, s.bigContainerKg, false);
           const bigItem = bigMatch
             ? { code:p.code, name:p.name, capacity:s.bigContainerKg, unit, unitPrice:bigMatch.specialPrice, note:"(国内缶)" }
-            : null;
+            : bigConds.length ? { code:p.code, name:p.name, capacity:s.bigContainerKg, unit, unitPrice:0, note:"(国内缶)", priceWarning:true } : null;
           if(isThinnerProduct(p)){
             [[baseItem,s.baseContainerKg],[smallItem,s.smallContainerKg],[bigItem,s.bigContainerKg]].forEach(([it,cap])=>{
               if(!it) return;
@@ -3933,6 +4654,7 @@ const ViewEditor = {
               if(cands.length) it.calcCandidates = cands;
             });
           }
+          [[baseItem,s.baseContainerKg],[smallItem,s.smallContainerKg],[bigItem,s.bigContainerKg]].forEach(([it,cap])=> this.addConditionalCandidates(it, p, cap));
           if(ownSpecial && Number(p.specialKg)!==s.baseContainerKg && Number(p.specialKg)!==s.smallContainerKg && Number(p.specialKg)!==s.bigContainerKg){
             q.items.push({ code:p.code, name:p.name, capacity:p.specialKg, unit, unitPrice:p.specialPrice, note:"(国内缶)" });
           }
@@ -3952,8 +4674,16 @@ const ViewEditor = {
               if(cands.length) it.calcCandidates = cands;
             });
           }
+          this.addConditionalCandidates(costBaseItem, p, s.baseContainerKg);
+          this.addConditionalCandidates(costSmallItem, p, s.smallContainerKg);
           q.items.push(costBaseItem);
           q.items.push(costSmallItem);
+          // 18kgは条件別の価格が登録されている時だけ追加する
+          if(findConditionalPriceCandidates(p.code, p.client, s.bigContainerKg, false).length){
+            const costBigItem = { code:p.code, name:p.name, capacity:s.bigContainerKg, unit, unitPrice:0, note:"(国内缶)", priceWarning:true };
+            this.addConditionalCandidates(costBigItem, p, s.bigContainerKg);
+            q.items.push(costBigItem);
+          }
           this.touch(q);
           close();
           App.render();

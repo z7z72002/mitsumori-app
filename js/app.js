@@ -647,7 +647,7 @@ function candidateSelectHtml(cands){
   const costs = new Set(cands.map(c=>{ const m = COST_RE.exec(c.label||""); return m ? m[1] : null; }));
   const commonCost = (costs.size === 1 && !costs.has(null)) ? [...costs][0] : null;
   const options = cands.map((c,ci)=>{
-    const label = commonCost ? String(c.label||"").replace(COST_RE, "") : String(c.label||"");
+    const label = displayCandidateLabel(commonCost ? String(c.label||"").replace(COST_RE, "") : String(c.label||""));
     return `<option value="${ci}">${escapeHtml(label)}：${yen(c.price)}</option>`;
   }).join("");
   const head = `価格候補から選ぶ（${commonCost ? `原価${commonCost}円/kg・` : ""}${cands.length}件）`;
@@ -672,6 +672,90 @@ function findSpecialPriceEntry(code, client, capacityKg){
     hasRecordedPrice(x.specialPrice)
   );
 }
+/* 条件別の価格（特価マスタの特価1〜5・条件1〜5）の表記。アプリ内のすべての場面でこの表記にする（2026-10-11 平井さんの指示）。
+   条件名（国内缶・UN缶など）があれば後ろに付ける */
+const COND_PRICE_PREFIX = "条件付き（旧特価15%UP済み価格）";
+function condPriceText(cond){
+  const c = String(cond || "").trim();
+  return (c === "特価欄空・条件付き" || c === "条件あり") ? "" : c;
+}
+function condPriceLabel(cond){ return COND_PRICE_PREFIX + condPriceText(cond); }
+// 以前に作った見積書・自動処理が書いた古い表記「条件付き価格（○○）」も、表示するときに新しい表記にする
+function displayCandidateLabel(label){
+  return String(label || "").replace(/^条件付き価格（(.*)）$/, (m, c)=> condPriceLabel(c));
+}
+
+/* 「参考：他社価格」：同じ品番・同じ容量の、他のお客様の価格。
+   宛先と同じ会社の別支店を先頭に、その他は安い順、標準価格は最後。宛先と全く同じ取引先は除く。 */
+let _otherPriceIdx = null, _otherPriceIdxSrc = null;
+function otherPriceIndex(){
+  if(_otherPriceIdxSrc !== Store.data.products){
+    _otherPriceIdx = new Map();
+    for(const p of Store.data.products){
+      const key = String(p.code || "").trim() + "|" + Number(p.specialKg);
+      if(!_otherPriceIdx.has(key)) _otherPriceIdx.set(key, []);
+      _otherPriceIdx.get(key).push(p);
+    }
+    _otherPriceIdxSrc = Store.data.products;
+  }
+  return _otherPriceIdx;
+}
+function findOtherClientPrices(code, capacityKg, client){
+  const rows = otherPriceIndex().get(String(code || "").trim() + "|" + Number(capacityKg)) || [];
+  const out = [];
+  let std = 0;
+  for(const x of rows){
+    if(!std && hasRecordedPrice(x.standardPrice)) std = Number(x.standardPrice);
+    if((x.client || "") === (client || "")) continue;
+    let prices, note;
+    if(hasRecordedPrice(x.specialPrice)){ prices = [{ label: "", price: Number(x.specialPrice) }]; note = x.note || ""; }
+    else if(Array.isArray(x.alternatives) && x.alternatives.length){
+      prices = x.alternatives.map(a=>({ label: condPriceText(a.condition), price: Number(a.price) }));
+      note = COND_PRICE_PREFIX;
+    } else continue;
+    out.push({ client: x.client || "", prices, note, sameCompany: !!client && isSimilarClientName(x.client, client),
+               isStandard: false, sortPrice: Math.min(...prices.map(p=>p.price)) });
+  }
+  out.sort((a, b)=> (b.sameCompany - a.sameCompany) || (a.sortPrice - b.sortPrice));
+  if(std) out.push({ client: "標準価格", prices: [{ label: "", price: std }], note: "", sameCompany: false, isStandard: true, sortPrice: std });
+  return out;
+}
+// 「参考：他社価格」のポップアップを出す位置（画面基準）。品目表の枠は横スクロールのため、枠の中に置くと切れてしまう。
+// 印の右端にそろえて下に出し、下に入りきらなければ上に出す。左右は画面から8pxの内側に収める。
+function tashaPopupPosition(btnRect, popW, popH, viewW, viewH){
+  const gap = 6, margin = 8;
+  const left = Math.max(margin, Math.min(btnRect.right - popW, viewW - popW - margin));
+  const below = btnRect.bottom + gap;
+  const top = (below + popH > viewH - margin && btnRect.top - gap - popH >= margin) ? btnRect.top - gap - popH : below;
+  return { left, top };
+}
+// メールから作成の確認画面の「単価の状況」に出す条件別の価格（先頭の候補）
+function mailCondTagText(kg, cond){ return `${kg}kg ${cond[0].label} ${yen(cond[0].price)}`; }
+// 品目表の「操作」の枠に出す「参考：他社価格」の印と、カーソルを合わせると出る一覧（他社価格が無い行は空）
+function otherPriceButtonHtml(item, client){
+  const code = String(item.code || "").trim();
+  if(!code) return "";
+  const list = findOtherClientPrices(code, item.capacity, client);
+  if(!list.length) return "";
+  const rows = list.map(o=>`
+    <tr class="${o.sameCompany ? "same" : o.isStandard ? "std" : ""}">
+      <td>${escapeHtml(o.client)}${o.sameCompany ? '<span class="tag">同じ会社</span>' : ""}</td>
+      <td class="p">${o.prices.map(p=>`${p.label ? escapeHtml(p.label) + " " : ""}${yen(p.price)}`).join("<br>")}</td>
+      <td>${escapeHtml(o.note)}</td>
+    </tr>`).join("");
+  return `<span class="tasha-wrap">
+    <button type="button" class="tasha-btn" data-act="tasha-toggle">参考：他社価格</button>
+    <div class="tasha-pop">
+      <h4>${escapeHtml(code)}　${escapeHtml(String(item.capacity))}kg の他のお客様の価格（${list.length}件）</h4>
+      <table><colgroup><col class="c1"><col class="c2"><col class="c3"></colgroup>
+        <thead><tr><th>取引先</th><th style="text-align:right;">価格</th><th>備考</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="foot">同じ会社（支店違い）を先頭に、その他は安い順。特価/原価管理リストの登録内容です。</div>
+    </div>
+  </span>`;
+}
+
 /* 特価欄が空で、条件別の価格（特価マスタの特価1〜5・条件1〜5）が登録されている場合の価格候補。
    UN缶指定ならUN缶、そうでなければ国内缶の価格を先頭にする */
 function findConditionalPriceCandidates(code, client, capacityKg, un){
@@ -683,7 +767,7 @@ function findConditionalPriceCandidates(code, client, capacityKg, un){
     Array.isArray(x.alternatives) && x.alternatives.length
   );
   if(!row) return [];
-  const list = row.alternatives.map(a=>({ label: `条件付き価格（${a.condition || "特価欄空・条件付き"}）`, price: Number(a.price) }));
+  const list = row.alternatives.map(a=>({ label: condPriceLabel(a.condition), price: Number(a.price) }));
   const first = un ? /UN/i : /国内/;
   return list.sort((x, y)=> first.test(y.label) - first.test(x.label));
 }
@@ -2153,7 +2237,7 @@ const MailImport = {
         const sp = client ? findSpecialPriceEntry(it.code, client, kg) : null;
         if(sp) return `<span class="mi-tag ok">${kg}kg 特価 ${yen(sp.specialPrice)}</span>`;
         const cond = client ? findConditionalPriceCandidates(it.code, client, kg, it.un) : [];
-        if(cond.length) return `<span class="mi-tag cond" title="${escapeHtml(cond.map(c=>c.label.replace(/^条件付き価格/, "") + " " + yen(c.price)).join(" / "))}">${kg}kg 条件付き ${yen(cond[0].price)}${escapeHtml(cond[0].label.replace(/^条件付き価格/, ""))}</span>`;
+        if(cond.length) return `<span class="mi-tag cond" title="${escapeHtml(cond.map(c=>c.label + " " + yen(c.price)).join(" / "))}">${escapeHtml(mailCondTagText(kg, cond))}</span>`;
         return `<span class="mi-tag">${kg}kg 単価未登録</span>`;
       });
       return tags.join(" ");
@@ -3055,6 +3139,9 @@ const ViewProducts = {
           existing.costPerKg=item.costPerKg;
           existing.standardPrice=item.standardPrice!==""?item.standardPrice:existing.standardPrice;
           existing.note=item.note||existing.note;
+          // 条件別の価格（国内缶／UN缶など）は特価マスタの最新に合わせる（無くなった行は消す）
+          if(item.alternatives) existing.alternatives = item.alternatives;
+          else delete existing.alternatives;
           updated++;
         }
         else {
@@ -4120,6 +4207,7 @@ const ViewEditor = {
           <button type="button" data-act="up" title="上へ">▲</button>
           <button type="button" data-act="down" title="下へ">▼</button>
           <button type="button" data-act="del" title="削除">✕</button>`}
+          ${otherPriceButtonHtml(it, q.customerCompany)}
         </td>
       </tr>`;}).join("");
 
@@ -4211,6 +4299,7 @@ const ViewEditor = {
             <div class="item-toolbar">
               <button class="btn small item-tab-btn" id="btn-add-from-master" ${locked?"disabled":""}>＋ 既存製品より選択（基準容量・小容量を自動追加）</button>
               <button class="btn small ghost item-tab-btn" id="btn-add-blank" ${locked?"disabled":""}>＋ 新規作成（手入力）</button>
+              <button class="btn small item-tab-btn" id="btn-copy-quote" title="品目・単価・摘要などを同じ内容にした新しい見積書を作ります（宛先・検印は空欄。検印済みの見積書からもコピーできます）">⧉ この見積をコピー</button>
             </div>
             <div style="overflow-x:auto;">
               <table class="item-edit-table">
@@ -4308,6 +4397,52 @@ const ViewEditor = {
           App.render();
         });
       }
+    });
+
+    // 「参考：他社価格」：カーソルを合わせると一覧（CSS）。クリックで開いたままにする／閉じる（タッチ操作用。検印済みでも使える）
+    const placeTasha = wrap=>{
+      const pop = wrap.querySelector(".tasha-pop"), btn = wrap.querySelector(".tasha-btn");
+      const pos = tashaPopupPosition(btn.getBoundingClientRect(), pop.offsetWidth || 460, pop.offsetHeight || 300, window.innerWidth, window.innerHeight);
+      pop.style.left = pos.left + "px"; pop.style.top = pos.top + "px";
+    };
+    document.querySelectorAll('[data-act="tasha-toggle"]').forEach(btn=>{
+      const wrap = btn.closest(".tasha-wrap");
+      wrap.addEventListener("mouseenter", ()=> placeTasha(wrap));
+      btn.addEventListener("click", e=>{
+        e.preventDefault();
+        const open = !wrap.classList.contains("pinned");
+        document.querySelectorAll(".tasha-wrap.pinned").forEach(w=> w.classList.remove("pinned"));
+        if(open){ wrap.classList.add("pinned"); placeTasha(wrap); }
+      });
+    });
+    this._placeTasha = placeTasha;
+    if(!this._tashaScrollBound){
+      // 開いたままのポップアップは、画面をスクロールしたら位置を付け直す（ポップアップの中の一覧のスクロールは除く）
+      this._tashaScrollBound = true;
+      window.addEventListener("scroll", e=>{
+        if(e.target && e.target.closest && e.target.closest(".tasha-pop")) return;
+        document.querySelectorAll(".tasha-wrap.pinned").forEach(w=> this._placeTasha(w));
+      }, true);
+    }
+
+    // 同じ内容の見積書を他のお客様にも出す時用：宛先・検印・見積番号・メール連携を空にした写しを作って開く
+    // （検印済みの見積書からもコピーできるよう、下の「ロック中は return」より前で登録する）
+    document.getElementById("btn-copy-quote").addEventListener("click", ()=>{
+      const copy = JSON.parse(JSON.stringify(q));
+      const now = new Date().toISOString();
+      Object.assign(copy, {
+        id: uid(), number: "", date: toDateInputValue(new Date()),
+        customerCompany: "", customerPerson: "",
+        seals: [null,null,null], deletedAt: null, createdAt: now, updatedAt: now
+      });
+      delete copy.replyDraft;
+      delete copy.sourceMail;
+      Store.data.quotes.push(copy);
+      Store.save();
+      App.go("editor", { quoteId: copy.id });
+      toast(`この見積書をコピーしました（${copy.items.length}品目）。宛先の会社名・ご担当者名を入力してください`);
+      const companyInput = document.getElementById("f-company");
+      if(companyInput) companyInput.focus();
     });
 
     if(locked) return; // これ以降は編集系のバインドなので、ロック中は不要

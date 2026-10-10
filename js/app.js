@@ -687,9 +687,10 @@ function displayCandidateLabel(label){
 
 /* 「参考：他社価格」：同じ品番・同じ容量の、他のお客様の価格。
    宛先と同じ会社の別支店を先頭に、その他は安い順、標準価格は最後。宛先と全く同じ取引先は除く。 */
-let _otherPriceIdx = null, _otherPriceIdxSrc = null;
+let _otherPriceIdx = null, _otherPriceIdxSrc = null, _otherPriceIdxLen = -1;
 function otherPriceIndex(){
-  if(_otherPriceIdxSrc !== Store.data.products){
+  // 配列の差し替え（全て置き換え）と、行の追加（マージ）のどちらでも作り直す
+  if(_otherPriceIdxSrc !== Store.data.products || _otherPriceIdxLen !== Store.data.products.length){
     _otherPriceIdx = new Map();
     for(const p of Store.data.products){
       const key = String(p.code || "").trim() + "|" + Number(p.specialKg);
@@ -697,12 +698,13 @@ function otherPriceIndex(){
       _otherPriceIdx.get(key).push(p);
     }
     _otherPriceIdxSrc = Store.data.products;
+    _otherPriceIdxLen = Store.data.products.length;
   }
   return _otherPriceIdx;
 }
 function findOtherClientPrices(code, capacityKg, client){
   const rows = otherPriceIndex().get(String(code || "").trim() + "|" + Number(capacityKg)) || [];
-  const out = [];
+  const out = [], seen = new Set();
   let std = 0;
   for(const x of rows){
     if(!std && hasRecordedPrice(x.standardPrice)) std = Number(x.standardPrice);
@@ -713,10 +715,14 @@ function findOtherClientPrices(code, capacityKg, client){
       prices = x.alternatives.map(a=>({ label: condPriceText(a.condition), price: Number(a.price) }));
       note = COND_PRICE_PREFIX;
     } else continue;
+    const dupKey = (x.client || "") + "|" + prices.map(p=>p.label + p.price).join(",");
+    if(seen.has(dupKey)) continue;   // 同じ取引先・同じ価格の重複行は1件にまとめる
+    seen.add(dupKey);
     out.push({ client: x.client || "", prices, note, sameCompany: !!client && isSimilarClientName(x.client, client),
                isStandard: false, sortPrice: Math.min(...prices.map(p=>p.price)) });
   }
   out.sort((a, b)=> (b.sameCompany - a.sameCompany) || (a.sortPrice - b.sortPrice));
+  if(!out.length) return [];   // 他のお客様の価格が無ければ、標準価格だけでは出さない
   if(std) out.push({ client: "標準価格", prices: [{ label: "", price: std }], note: "", sameCompany: false, isStandard: true, sortPrice: std });
   return out;
 }
@@ -746,7 +752,7 @@ function otherPriceButtonHtml(item, client){
   return `<span class="tasha-wrap">
     <button type="button" class="tasha-btn" data-act="tasha-toggle">参考：他社価格</button>
     <div class="tasha-pop">
-      <h4>${escapeHtml(code)}　${escapeHtml(String(item.capacity))}kg の他のお客様の価格（${list.length}件）</h4>
+      <h4>${escapeHtml(code)}　${escapeHtml(String(item.capacity))}kg の他のお客様の価格（${list.filter(o=>!o.isStandard).length}件）</h4>
       <table><colgroup><col class="c1"><col class="c2"><col class="c3"></colgroup>
         <thead><tr><th>取引先</th><th style="text-align:right;">価格</th><th>備考</th></tr></thead>
         <tbody>${rows}</tbody>
@@ -1373,6 +1379,37 @@ function parseMasterExcelFile(file){
     reader.onerror = () => reject(reader.error);
     reader.readAsArrayBuffer(file);
   });
+}
+/* 原価リストへの取込み（既存に反映＝マージ）。品番・取引先・容量が一致する行は更新し、無い行は追加する。
+   条件別の価格（alternatives）は、特価マスタからの取込み（fromMaster）の時だけ最新に置き換え、無くなったものは消す。
+   CSV/Excel の原価リストには条件別の価格の列が無いので、その取込みでは触らない（消さない）。 */
+function mergeImportedProducts(products, imported, fromMaster){
+  let added = 0, updated = 0;
+  const keyOf = p => p.code.trim() + "|" + (p.client||"") + "|" + (p.specialKg??"");
+  const index = new Map();
+  products.forEach(p => index.set(keyOf(p), p));
+  for(const item of imported){
+    const existing = index.get(keyOf(item));
+    if(existing){
+      existing.name=item.name||existing.name;
+      existing.specialKg=item.specialKg!==""?item.specialKg:existing.specialKg;
+      existing.specialPrice=item.specialPrice!==""?item.specialPrice:existing.specialPrice;
+      existing.client=item.client||existing.client;
+      existing.costPerKg=item.costPerKg;
+      existing.standardPrice=item.standardPrice!==""?item.standardPrice:existing.standardPrice;
+      existing.note=item.note||existing.note;
+      if(fromMaster){
+        if(item.alternatives) existing.alternatives = item.alternatives;
+        else delete existing.alternatives;
+      }
+      updated++;
+    } else {
+      products.push(item);
+      index.set(keyOf(item), item);
+      added++;
+    }
+  }
+  return { added, updated };
 }
 function mapMasterRowsToProducts(rows){
   const C = MASTER_COL;
@@ -2962,7 +2999,7 @@ const ViewProducts = {
         const rows = await parseMasterExcelFile(file);
         const imported = mapMasterRowsToProducts(rows);
         if(!imported.length){ toast("取込めるデータが見つかりませんでした", true); return; }
-        this.showImportModal(imported);
+        this.showImportModal(imported, { fromMaster: true });
       }catch(err){
         console.error(err);
         toast("取込に失敗しました: " + err.message, true);
@@ -3088,7 +3125,7 @@ const ViewProducts = {
     });
   },
 
-  showImportModal(imported){
+  showImportModal(imported, opts){
     const overlay = document.createElement("div");
     overlay.className = "modal-overlay";
     overlay.innerHTML = `
@@ -3125,31 +3162,8 @@ const ViewProducts = {
       toast(`${imported.length} 件で原価リストを置き換えました`);
     });
     overlay.querySelector("#im-merge").addEventListener("click", ()=>{
-      let added=0, updated=0;
-      const keyOf = p => p.code.trim() + "|" + (p.client||"") + "|" + (p.specialKg??"");
-      const index = new Map();
-      Store.data.products.forEach(p => index.set(keyOf(p), p));
-      for(const item of imported){
-        const existing = index.get(keyOf(item));
-        if(existing){
-          existing.name=item.name||existing.name;
-          existing.specialKg=item.specialKg!==""?item.specialKg:existing.specialKg;
-          existing.specialPrice=item.specialPrice!==""?item.specialPrice:existing.specialPrice;
-          existing.client=item.client||existing.client;
-          existing.costPerKg=item.costPerKg;
-          existing.standardPrice=item.standardPrice!==""?item.standardPrice:existing.standardPrice;
-          existing.note=item.note||existing.note;
-          // 条件別の価格（国内缶／UN缶など）は特価マスタの最新に合わせる（無くなった行は消す）
-          if(item.alternatives) existing.alternatives = item.alternatives;
-          else delete existing.alternatives;
-          updated++;
-        }
-        else {
-          Store.data.products.push(item);
-          index.set(keyOf(item), item);
-          added++;
-        }
-      }
+      // 条件別の価格の扱いは、特価マスタからの取込みかどうかで変わる（mergeImportedProducts）
+      const { added, updated } = mergeImportedProducts(Store.data.products, imported, !!(opts && opts.fromMaster));
       Store.save(); close(); App.render();
       toast(`反映しました（新規 ${added} 件 / 更新 ${updated} 件）`);
     });
@@ -4399,30 +4413,48 @@ const ViewEditor = {
       }
     });
 
-    // 「参考：他社価格」：カーソルを合わせると一覧（CSS）。クリックで開いたままにする／閉じる（タッチ操作用。検印済みでも使える）
+    // 「参考：他社価格」：カーソルを合わせると一覧、クリックで開いたままにする／閉じる（タッチ操作用。検印済みでも使える）。
+    // 一覧は画面基準（position:fixed）で印の近くに出す。印と一覧の間を移る時に消えないよう、外れてから少し待って閉じる。
     const placeTasha = wrap=>{
       const pop = wrap.querySelector(".tasha-pop"), btn = wrap.querySelector(".tasha-btn");
       const pos = tashaPopupPosition(btn.getBoundingClientRect(), pop.offsetWidth || 460, pop.offsetHeight || 300, window.innerWidth, window.innerHeight);
       pop.style.left = pos.left + "px"; pop.style.top = pos.top + "px";
     };
-    document.querySelectorAll('[data-act="tasha-toggle"]').forEach(btn=>{
-      const wrap = btn.closest(".tasha-wrap");
-      wrap.addEventListener("mouseenter", ()=> placeTasha(wrap));
+    const bindTasha = wrap=>{
+      if(!wrap) return;
+      const btn = wrap.querySelector(".tasha-btn");
+      let timer = null;
+      wrap.addEventListener("mouseenter", ()=>{ clearTimeout(timer); wrap.classList.add("hov"); placeTasha(wrap); });
+      wrap.addEventListener("mouseleave", ()=>{ timer = setTimeout(()=> wrap.classList.remove("hov"), 250); });
       btn.addEventListener("click", e=>{
         e.preventDefault();
         const open = !wrap.classList.contains("pinned");
         document.querySelectorAll(".tasha-wrap.pinned").forEach(w=> w.classList.remove("pinned"));
         if(open){ wrap.classList.add("pinned"); placeTasha(wrap); }
       });
-    });
+    };
+    // 品番・容量・宛先が変わった時に、その行の印と一覧を作り直す
+    const refreshTasha = (tr, item)=>{
+      const cell = tr && tr.querySelector(".col-actions");
+      if(!cell) return;
+      const old = cell.querySelector(".tasha-wrap");
+      if(old) old.remove();
+      cell.insertAdjacentHTML("beforeend", otherPriceButtonHtml(item, q.customerCompany));
+      bindTasha(cell.querySelector(".tasha-wrap"));
+    };
+    document.querySelectorAll(".tasha-wrap").forEach(bindTasha);
     this._placeTasha = placeTasha;
-    if(!this._tashaScrollBound){
-      // 開いたままのポップアップは、画面をスクロールしたら位置を付け直す（ポップアップの中の一覧のスクロールは除く）
-      this._tashaScrollBound = true;
+    if(!this._tashaGlobalBound){
+      this._tashaGlobalBound = true;
+      const closeAll = ()=> document.querySelectorAll(".tasha-wrap.pinned, .tasha-wrap.hov").forEach(w=> w.classList.remove("pinned", "hov"));
+      // 開いたままの一覧：画面のスクロール・大きさの変更で位置を付け直す（一覧の中のスクロールは除く）。外側のクリックと Esc で閉じる
       window.addEventListener("scroll", e=>{
         if(e.target && e.target.closest && e.target.closest(".tasha-pop")) return;
         document.querySelectorAll(".tasha-wrap.pinned").forEach(w=> this._placeTasha(w));
       }, true);
+      window.addEventListener("resize", ()=> document.querySelectorAll(".tasha-wrap.pinned").forEach(w=> this._placeTasha(w)));
+      document.addEventListener("click", e=>{ if(!(e.target.closest && e.target.closest(".tasha-wrap"))) closeAll(); });
+      document.addEventListener("keydown", e=>{ if(e.key === "Escape") closeAll(); });
     }
 
     // 同じ内容の見積書を他のお客様にも出す時用：宛先・検印・見積番号・メール連携を空にした写しを作って開く
@@ -4459,6 +4491,12 @@ const ViewEditor = {
     bindField("f-number","number");
     bindField("f-date","date");
     bindField("f-company","customerCompany");
+    // 宛先が変わったら、全行の「参考：他社価格」を作り直す（自社の行を除く・同じ会社を先頭にするため）
+    let tashaCompanyTimer = null;
+    document.getElementById("f-company").addEventListener("input", ()=>{
+      clearTimeout(tashaCompanyTimer);
+      tashaCompanyTimer = setTimeout(()=> document.querySelectorAll("#item-rows tr[data-i]").forEach(tr=> refreshTasha(tr, q.items[Number(tr.dataset.i)])), 300);
+    });
     bindField("f-person","customerPerson");
     bindField("f-theme","theme");
     bindField("f-deliveryDate","deliveryDate");
@@ -4504,6 +4542,11 @@ const ViewEditor = {
           }
           this.touch(q);
           this.updatePreview();
+          if(f==="code" || f==="capacity"){
+            // 品番・容量が変わったら、その行の「参考：他社価格」を作り直す（入力中は少し待つ）
+            clearTimeout(tr._tashaTimer);
+            tr._tashaTimer = setTimeout(()=> refreshTasha(tr, q.items[i]), 300);
+          }
           if(f==="code"){
             const hintEl = document.getElementById(`line-hint-${i}`);
             if(hintEl) hintEl.innerHTML = lineHintHtml(inp.value);
@@ -4573,7 +4616,7 @@ const ViewEditor = {
           const chosen = q.items[i].calcCandidates[idx];
           q.items[i].unitPrice = chosen.price;
           q.items[i].priceWarning = false;
-          q.items[i].priceRef = { label: chosen.label, price: chosen.price };
+          q.items[i].priceRef = { label: displayCandidateLabel(chosen.label), price: chosen.price };
           q.items[i].appliedIndex = undefined;
           q.items[i].calcCandidates = undefined;
           this.touch(q);

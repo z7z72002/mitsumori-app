@@ -1,5 +1,5 @@
 // 「参考：他社価格」と「条件付き（旧特価15%UP済み価格）」表記のテスト（仮のデータ）
-// 実行: node --test tests/
+// 実行: node --test tests/tasha_price.test.js
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs"), path = require("path"), vm = require("vm");
@@ -11,7 +11,7 @@ function loadApp(products) {
   ctx.window = ctx;
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "js", "app.js"), "utf8") +
-    ";this.__t={Store,defaultData,condPriceLabel,displayCandidateLabel,findOtherClientPrices,findConditionalPriceCandidates,otherPriceButtonHtml,candidateSelectHtml,mailCondTagText,tashaPopupPosition};", ctx);
+    ";this.__t={Store,defaultData,condPriceLabel,displayCandidateLabel,findOtherClientPrices,findConditionalPriceCandidates,otherPriceButtonHtml,candidateSelectHtml,mailCondTagText,tashaPopupPosition,mergeImportedProducts};", ctx);
   const t = ctx.__t;
   t.Store.data = t.defaultData();
   t.Store.data.products = products || [];
@@ -120,4 +120,46 @@ test("ポップアップの位置：下に入りきらない時は印の上に�
   const t = loadApp();
   const pos = plain(t.tashaPopupPosition({ left: 1300, right: 1400, top: 800, bottom: 820 }, 460, 250, 1500, 900));
   assert.equal(pos.top, 800 - 6 - 250);
+});
+test("他社価格：標準価格しか無い品目は空（印を出さない）", () => {
+  const t = loadApp([P("X-1", 16, "杉村塗料株式会社　福島支店", 42670, { standardPrice: 46500 })]);
+  assert.deepEqual(plain(t.findOtherClientPrices("X-1", 16, "杉村塗料株式会社　福島支店")), []);
+  assert.equal(t.otherPriceButtonHtml({ code: "X-1", capacity: 16 }, "杉村塗料株式会社　福島支店"), "");
+});
+
+test("他社価格：件数に標準価格は含めない", () => {
+  const t = loadApp([P("X-1", 16, "萬座塗料株式会社", 40350, { standardPrice: 46500 })]);
+  assert.match(t.otherPriceButtonHtml({ code: "X-1", capacity: 16 }, "杉村塗料株式会社"), /の他のお客様の価格（1件）/);
+});
+
+test("他社価格：同じ取引先・同じ価格の重複行は1件にまとめる", () => {
+  const t = loadApp([P("X-1", 16, "萬座塗料株式会社", 40350), P("X-1", 16, "萬座塗料株式会社", 40350)]);
+  assert.equal(t.findOtherClientPrices("X-1", 16, "杉村塗料株式会社").length, 1);
+});
+
+test("他社価格：マージで行が足されたら、次の検索に反映される", () => {
+  const t = loadApp([P("X-1", 16, "萬座塗料株式会社", 40350)]);
+  assert.equal(t.findOtherClientPrices("X-1", 16, "杉村塗料株式会社").length, 1);
+  t.mergeImportedProducts(t.Store.data.products, [P("X-1", 16, "友和塗料株式会社", 43900)], false);
+  assert.equal(t.findOtherClientPrices("X-1", 16, "杉村塗料株式会社").length, 2);
+});
+
+test("マージ：CSV/Excelの取込みでは、条件別の価格を消さない", () => {
+  const t = loadApp([P("X-1", 4, "株式会社　大川", 0, { alternatives: [{ price: 15530, condition: "国内缶" }] })]);
+  t.mergeImportedProducts(t.Store.data.products, [P("X-1", 4, "株式会社　大川", 0)], false);
+  assert.equal(t.Store.data.products[0].alternatives.length, 1);
+});
+
+test("マージ：特価マスタの取込みでは、条件別の価格を最新にし、無くなったものは消す", () => {
+  const t = loadApp([
+    P("X-1", 4, "株式会社　大川", 0, { alternatives: [{ price: 15530, condition: "国内缶" }] }),
+    P("X-2", 4, "株式会社　大川", 0, { alternatives: [{ price: 9000, condition: "国内缶" }] }),
+  ]);
+  const r = plain(t.mergeImportedProducts(t.Store.data.products, [
+    P("X-1", 4, "株式会社　大川", 0, { alternatives: [{ price: 16000, condition: "国内缶" }] }),
+    P("X-2", 4, "株式会社　大川", 8800),
+  ], true));
+  assert.equal(t.Store.data.products[0].alternatives[0].price, 16000);
+  assert.equal("alternatives" in t.Store.data.products[1], false);
+  assert.deepEqual(r, { added: 0, updated: 2 });
 });

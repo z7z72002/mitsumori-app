@@ -647,12 +647,18 @@ function candidateSelectHtml(cands){
   const costs = new Set(cands.map(c=>{ const m = COST_RE.exec(c.label||""); return m ? m[1] : null; }));
   const commonCost = (costs.size === 1 && !costs.has(null)) ? [...costs][0] : null;
   const options = cands.map((c,ci)=>{
-    const label = displayCandidateLabel(commonCost ? String(c.label||"").replace(COST_RE, "") : String(c.label||""));
+    const label = candidateOptionLabel(commonCost ? String(c.label||"").replace(COST_RE, "") : String(c.label||""));
     return `<option value="${ci}">${escapeHtml(label)}：${yen(c.price)}</option>`;
   }).join("");
   const head = `価格候補から選ぶ（${commonCost ? `原価${commonCost}円/kg・` : ""}${cands.length}件）`;
   return `<select class="cand-select" data-act="apply-calc-candidate-select" title="選ぶとその単価が入ります">
     <option value="">${escapeHtml(head)}</option>${options}</select>`;
+}
+/* 単価未登録の品目に、特価マスタの条件別の価格（国内缶／UN缶など）を価格候補として先頭に付ける */
+function addConditionalCandidatesToItem(it, p, cap){
+  if(!it || !it.priceWarning) return;
+  const cands = findConditionalPriceCandidates(p.code, p.client, cap, /UN/i.test(it.note || ""));
+  if(cands.length) it.calcCandidates = cands.concat(it.calcCandidates || []);
 }
 function lineHintHtml(code){
   const lm = matchLineCode(code, Store.data.lineCodes);
@@ -742,6 +748,13 @@ function tashaPopupPosition(btnRect, popW, popH, viewW, viewH){
   const below = btnRect.bottom + gap;
   const top = (below + popH > viewH - margin && btnRect.top - gap - popH >= margin) ? btnRect.top - gap - popH : below;
   return { left, top };
+}
+/* 価格候補の一覧（プルダウン）の中の表記。「要再見積り」は付けず「旧特価15%UP済み価格 国内缶」の形にする（2026-10-11 平井さんの指示。他の場所の表記は変えない） */
+function candidateOptionLabel(label){
+  const l = displayCandidateLabel(label);
+  if(!l.startsWith(COND_PRICE_PREFIX)) return l;
+  const cond = l.slice(COND_PRICE_PREFIX.length);
+  return "旧特価15%UP済み価格" + (cond ? " " + cond : "");
 }
 // メールから作成の確認画面の「単価の状況」に出す条件別の価格（先頭の候補）
 function mailCondTagText(kg, cond){ return `${kg}kg ${cond[0].label} ${yen(cond[0].price)}`; }
@@ -2767,6 +2780,61 @@ const ViewQuotes = {
   }
 };
 
+/* 特価/原価管理リストの【コピー】で作る見積書の品目（硬化剤以外）。特価が0円の容量には、特価マスタの条件別の価格（国内缶／UN缶など）を価格候補として付ける。*/
+function itemsFromProductRow(p){
+  const s = Store.data.settings;
+  const ownSpecial = hasRecordedPrice(p.specialPrice);
+  const hasAnySpecial = ownSpecial
+    || !!findSpecialPriceEntry(p.code, p.client, s.baseContainerKg)
+    || !!findSpecialPriceEntry(p.code, p.client, s.smallContainerKg)
+    || !!findSpecialPriceEntry(p.code, p.client, s.bigContainerKg);
+  let baseItem, smallItem, bigItem = null;
+  if(hasAnySpecial){
+    const baseMatch = (ownSpecial && Number(p.specialKg)===s.baseContainerKg) ? p : findSpecialPriceEntry(p.code, p.client, s.baseContainerKg);
+    const smallMatch = (ownSpecial && Number(p.specialKg)===s.smallContainerKg) ? p : findSpecialPriceEntry(p.code, p.client, s.smallContainerKg);
+    const bigMatch = (ownSpecial && Number(p.specialKg)===s.bigContainerKg) ? p : findSpecialPriceEntry(p.code, p.client, s.bigContainerKg);
+    const unit = unitForName(p.name);
+    baseItem = baseMatch
+      ? { code:p.code, name:p.name, capacity:s.baseContainerKg, unit, unitPrice:baseMatch.specialPrice, note:"(国内缶)" }
+      : { code:p.code, name:p.name, capacity:s.baseContainerKg, unit, unitPrice:0, note:"(国内缶)", priceWarning:true };
+    smallItem = smallMatch
+      ? { code:p.code, name:p.name, capacity:s.smallContainerKg, unit, unitPrice:smallMatch.specialPrice, note:"(国内缶)" }
+      : { code:p.code, name:p.name, capacity:s.smallContainerKg, unit, unitPrice:0, note:"(国内缶)", priceWarning:true };
+    if(!smallMatch && baseMatch){
+      smallItem.calcCandidate = roundUp10((baseMatch.specialPrice / s.baseContainerKg) * (s.smallContainerKg + s.smallAddKg) + s.smallAddFee);
+      smallItem.calcCandidateLabel = `${s.baseContainerKg}KG特価より算出`;
+    }
+    if(!baseMatch && smallMatch){
+      baseItem.calcCandidate = roundUp10((smallMatch.specialPrice - s.smallAddFee) / (s.smallContainerKg + s.smallAddKg) * s.baseContainerKg);
+      baseItem.calcCandidateLabel = `${s.smallContainerKg}KG特価より算出`;
+    }
+    if(bigMatch){
+      bigItem = { code:p.code, name:p.name, capacity:s.bigContainerKg, unit, unitPrice:bigMatch.specialPrice, note:"(国内缶)" };
+    }
+  } else {
+    const unit = unitForName(p.name);
+    baseItem = { code:p.code, name:p.name, capacity:s.baseContainerKg, unit, unitPrice:0, note:"(国内缶)", priceWarning:true };
+    smallItem = { code:p.code, name:p.name, capacity:s.smallContainerKg, unit, unitPrice:0, note:"(国内缶)", priceWarning:true };
+  }
+
+  if(isThinnerProduct(p)){
+    [[baseItem,s.baseContainerKg],[smallItem,s.smallContainerKg],[bigItem,s.bigContainerKg]].forEach(([it,cap])=>{
+      if(!it) return;
+      const cands = findSimilarClientPriceCandidates(p.code, cap, p.client);
+      if(cands.length) it.calcCandidates = cands;
+    });
+  }
+
+  // 特価が0円の容量には、条件別の価格（国内缶／UN缶など）を価格候補として先頭に付ける。18kgは特価も無く条件別の価格が登録されている時だけ行を追加する
+  if(!bigItem && findConditionalPriceCandidates(p.code, p.client, s.bigContainerKg, false).length){
+    bigItem = { code:p.code, name:p.name, capacity:s.bigContainerKg, unit:unitForName(p.name), unitPrice:0, note:"(国内缶)", priceWarning:true };
+  }
+  [[baseItem,s.baseContainerKg],[smallItem,s.smallContainerKg],[bigItem,s.bigContainerKg]].forEach(([it,cap])=> addConditionalCandidatesToItem(it, p, cap));
+  const items = [ baseItem, smallItem ];
+  if(bigItem) items.push(bigItem);
+  return items;
+}
+
 /* ==========================================================
    画面：原価リスト管理
    ========================================================== */
@@ -3040,15 +3108,6 @@ const ViewProducts = {
       const id = tr.dataset.id;
       const p = Store.data.products.find(x=>x.id===id);
       tr.querySelector('[data-act="copy-to-quote"]').addEventListener("click", ()=>{
-        const s = Store.data.settings;
-        const lineMatch = matchLineCode(p.code, Store.data.lineCodes);
-        const recIdx = lineMatch ? lineMatch.newIndex : null;
-        const ownSpecial = hasRecordedPrice(p.specialPrice);
-        const hasAnySpecial = ownSpecial
-          || !!findSpecialPriceEntry(p.code, p.client, s.baseContainerKg)
-          || !!findSpecialPriceEntry(p.code, p.client, s.smallContainerKg)
-          || !!findSpecialPriceEntry(p.code, p.client, s.bigContainerKg);
-
         if(isHardener(p)){
           const unit = unitForName(p.name);
           const cap = Number(p.specialKg) || 4;
@@ -3078,45 +3137,8 @@ const ViewProducts = {
           return;
         }
 
-        let baseItem, smallItem, bigItem = null;
-        if(hasAnySpecial){
-          const baseMatch = (ownSpecial && Number(p.specialKg)===s.baseContainerKg) ? p : findSpecialPriceEntry(p.code, p.client, s.baseContainerKg);
-          const smallMatch = (ownSpecial && Number(p.specialKg)===s.smallContainerKg) ? p : findSpecialPriceEntry(p.code, p.client, s.smallContainerKg);
-          const bigMatch = (ownSpecial && Number(p.specialKg)===s.bigContainerKg) ? p : findSpecialPriceEntry(p.code, p.client, s.bigContainerKg);
-          const unit = unitForName(p.name);
-          baseItem = baseMatch
-            ? { code:p.code, name:p.name, capacity:s.baseContainerKg, unit, unitPrice:baseMatch.specialPrice, note:"(国内缶)" }
-            : { code:p.code, name:p.name, capacity:s.baseContainerKg, unit, unitPrice:0, note:"(国内缶)", priceWarning:true };
-          smallItem = smallMatch
-            ? { code:p.code, name:p.name, capacity:s.smallContainerKg, unit, unitPrice:smallMatch.specialPrice, note:"(国内缶)" }
-            : { code:p.code, name:p.name, capacity:s.smallContainerKg, unit, unitPrice:0, note:"(国内缶)", priceWarning:true };
-          if(!smallMatch && baseMatch){
-            smallItem.calcCandidate = roundUp10((baseMatch.specialPrice / s.baseContainerKg) * (s.smallContainerKg + s.smallAddKg) + s.smallAddFee);
-            smallItem.calcCandidateLabel = `${s.baseContainerKg}KG特価より算出`;
-          }
-          if(!baseMatch && smallMatch){
-            baseItem.calcCandidate = roundUp10((smallMatch.specialPrice - s.smallAddFee) / (s.smallContainerKg + s.smallAddKg) * s.baseContainerKg);
-            baseItem.calcCandidateLabel = `${s.smallContainerKg}KG特価より算出`;
-          }
-          if(bigMatch){
-            bigItem = { code:p.code, name:p.name, capacity:s.bigContainerKg, unit, unitPrice:bigMatch.specialPrice, note:"(国内缶)" };
-          }
-        } else {
-          const unit = unitForName(p.name);
-          baseItem = { code:p.code, name:p.name, capacity:s.baseContainerKg, unit, unitPrice:0, note:"(国内缶)", priceWarning:true };
-          smallItem = { code:p.code, name:p.name, capacity:s.smallContainerKg, unit, unitPrice:0, note:"(国内缶)", priceWarning:true };
-        }
-
-        if(isThinnerProduct(p)){
-          [[baseItem,s.baseContainerKg],[smallItem,s.smallContainerKg],[bigItem,s.bigContainerKg]].forEach(([it,cap])=>{
-            if(!it) return;
-            const cands = findSimilarClientPriceCandidates(p.code, cap, p.client);
-            if(cands.length) it.calcCandidates = cands;
-          });
-        }
-
-        const items = [ baseItem, smallItem ];
-        if(bigItem) items.push(bigItem);
+        const items = itemsFromProductRow(p);
+        const baseItem = items[0], smallItem = items[1];
         const q = {
           id: uid(), number: "", date: toDateInputValue(new Date()),
           customerCompany: "", customerPerson: "", officeIndex: 0, theme: "",
@@ -4704,11 +4726,7 @@ const ViewEditor = {
   },
 
   // 単価未登録の品目に、特価マスタの条件別の価格（国内缶／UN缶など）を価格候補として先頭に付ける
-  addConditionalCandidates(it, p, cap){
-    if(!it || !it.priceWarning) return;
-    const cands = findConditionalPriceCandidates(p.code, p.client, cap, /UN/i.test(it.note || ""));
-    if(cands.length) it.calcCandidates = cands.concat(it.calcCandidates || []);
-  },
+  addConditionalCandidates(it, p, cap){ addConditionalCandidatesToItem(it, p, cap); },
 
   PP_DISPLAY_LIMIT: 200,
   openProductPicker(q){

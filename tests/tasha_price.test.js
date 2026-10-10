@@ -11,7 +11,7 @@ function loadApp(products) {
   ctx.window = ctx;
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "js", "app.js"), "utf8") +
-    ";this.__t={Store,defaultData,condPriceLabel,displayCandidateLabel,findOtherClientPrices,findConditionalPriceCandidates,otherPriceButtonHtml,candidateSelectHtml,mailCondTagText,tashaPopupPosition,mergeImportedProducts};", ctx);
+    ";this.__t={Store,defaultData,condPriceLabel,displayCandidateLabel,findOtherClientPrices,findConditionalPriceCandidates,otherPriceButtonHtml,candidateSelectHtml,mailCondTagText,tashaPopupPosition,mergeImportedProducts,itemsFromProductRow,candidateOptionLabel};", ctx);
   const t = ctx.__t;
   t.Store.data = t.defaultData();
   t.Store.data.products = products || [];
@@ -102,7 +102,7 @@ test("画面：他社価格がある行は「参考：他社価格」とポッ�
 test("画面：価格候補リストの古い表記は新しい表記で表示する", () => {
   const t = loadApp();
   const html = t.candidateSelectHtml([{ label: "条件付き価格（UN缶）", price: 16100 }]);
-  assert.match(html, /要再見積り（旧特価15%UP済み価格）UN缶：¥16,100/);
+  assert.match(html, /旧特価15%UP済み価格 UN缶：¥16,100/);   // プルダウンの中は「要再見積り」を付けない
   assert.doesNotMatch(html, /条件付き価格（/);
 });
 test("画面：メールから作成の確認画面も新しい表記で出す", () => {
@@ -180,4 +180,57 @@ test("他社価格：通常の特価の行は、備考が違っても同じ取�
 test("他社価格：条件別の価格が数値でないものは無視し、残らなければ出さない", () => {
   const t = loadApp([P("X-1", 16, "株式会社　大川", 0, { alternatives: [{ price: "abc", condition: "国内缶" }] })]);
   assert.deepEqual(plain(t.findOtherClientPrices("X-1", 16, "杉村塗料株式会社")), []);
+});
+// ---- 特価/原価管理リストの【コピー】：特価が0円の容量に、国内缶／UN缶などの価格候補を付ける ----
+test("コピー：特価が0円の容量に条件別の価格を候補として付ける（18kgの特価はそのまま）", () => {
+  const t = loadApp([
+    P("X-1", 4, "株式会社　大川", 0, { alternatives: [{ price: 15530, condition: "国内缶" }, { price: 16100, condition: "UN缶" }] }),
+    P("X-1", 16, "株式会社　大川", 0, { alternatives: [{ price: 33350, condition: "" }] }),
+    P("X-1", 18, "株式会社　大川", 39100),
+  ]);
+  const items = plain(t.itemsFromProductRow(t.Store.data.products[0]));
+  assert.deepEqual(items.map(i => i.capacity), [16, 4, 18]);
+  const i16 = items[0], i4 = items[1], i18 = items[2];
+  assert.equal(i16.unitPrice, 0);
+  assert.deepEqual(i16.calcCandidates.map(c => c.price), [33350]);
+  assert.deepEqual(i4.calcCandidates.map(c => [c.label, c.price]), [
+    ["要再見積り（旧特価15%UP済み価格）国内缶", 15530], ["要再見積り（旧特価15%UP済み価格）UN缶", 16100]]);
+  assert.equal(i18.unitPrice, 39100);
+  assert.equal(i18.calcCandidates, undefined);
+});
+
+test("コピー：条件別の価格が無い行は、これまでどおり候補を付けない", () => {
+  const t = loadApp([P("X-2", 16, "株式会社　大川", 0)]);
+  const items = plain(t.itemsFromProductRow(t.Store.data.products[0]));
+  assert.deepEqual(items.map(i => i.capacity), [16, 4]);
+  assert.equal(items[0].calcCandidates, undefined);
+  assert.equal(items[0].priceWarning, true);
+});
+
+test("コピー：18kgは条件別の価格が登録されている時だけ行を追加する", () => {
+  const t = loadApp([
+    P("X-3", 16, "株式会社　大川", 0),
+    P("X-3", 18, "株式会社　大川", 0, { alternatives: [{ price: 47610, condition: "" }] }),
+  ]);
+  const items = plain(t.itemsFromProductRow(t.Store.data.products[0]));
+  assert.deepEqual(items.map(i => i.capacity), [16, 4, 18]);
+  assert.equal(items[2].unitPrice, 0);
+  assert.deepEqual(items[2].calcCandidates.map(c => c.price), [47610]);
+});
+
+// ---- 価格候補の一覧（プルダウン）の中の表記：「要再見積り」は付けない ----
+test("プルダウン内の表記：要再見積りを外し「旧特価15%UP済み価格 国内缶」の形にする", () => {
+  const t = loadApp();
+  assert.equal(t.candidateOptionLabel("要再見積り（旧特価15%UP済み価格）国内缶"), "旧特価15%UP済み価格 国内缶");
+  assert.equal(t.candidateOptionLabel("要再見積り（旧特価15%UP済み価格）"), "旧特価15%UP済み価格");
+  assert.equal(t.candidateOptionLabel("条件付き価格（UN缶）"), "旧特価15%UP済み価格 UN缶");
+  assert.equal(t.candidateOptionLabel("原価900円/kg×指数0.85（推奨・新指数）"), "原価900円/kg×指数0.85（推奨・新指数）");
+});
+
+test("プルダウン：一覧の選択肢は「要再見積り」を含まない（他の場所の表記は変えない）", () => {
+  const t = loadApp();
+  const html = t.candidateSelectHtml([{ label: "要再見積り（旧特価15%UP済み価格）UN缶", price: 16100 }]);
+  assert.match(html, /旧特価15%UP済み価格 UN缶：¥16,100/);
+  assert.doesNotMatch(html, /要再見積り/);
+  assert.equal(t.condPriceLabel("UN缶"), "要再見積り（旧特価15%UP済み価格）UN缶");
 });

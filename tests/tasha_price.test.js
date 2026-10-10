@@ -1,4 +1,4 @@
-// 「参考：他社価格」と「条件付き（旧特価15%UP済み価格）」表記のテスト（仮のデータ）
+// 「参考：他社価格」と「要再見積り（旧特価15%UP済み価格）」表記のテスト（仮のデータ）
 // 実行: node --test tests/tasha_price.test.js
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -23,21 +23,22 @@ const P = (code, kg, client, specialPrice, extra) => Object.assign({ code, name:
 
 test("条件付きの表記：条件名があれば後ろに付ける", () => {
   const t = loadApp();
-  assert.equal(t.condPriceLabel("UN缶"), "条件付き（旧特価15%UP済み価格）UN缶");
-  assert.equal(t.condPriceLabel(""), "条件付き（旧特価15%UP済み価格）");
+  assert.equal(t.condPriceLabel("UN缶"), "要再見積り（旧特価15%UP済み価格）UN缶");
+  assert.equal(t.condPriceLabel(""), "要再見積り（旧特価15%UP済み価格）");
 });
 
 test("古い表記「条件付き価格（○○）」を新しい表記に置き換える", () => {
   const t = loadApp();
-  assert.equal(t.displayCandidateLabel("条件付き価格（国内缶）"), "条件付き（旧特価15%UP済み価格）国内缶");
-  assert.equal(t.displayCandidateLabel("条件付き価格（特価欄空・条件付き）"), "条件付き（旧特価15%UP済み価格）");
+  assert.equal(t.displayCandidateLabel("条件付き価格（国内缶）"), "要再見積り（旧特価15%UP済み価格）国内缶");
+  assert.equal(t.displayCandidateLabel("条件付き価格（特価欄空・条件付き）"), "要再見積り（旧特価15%UP済み価格）");
+  assert.equal(t.displayCandidateLabel("条件付き（旧特価15%UP済み価格）UN缶"), "要再見積り（旧特価15%UP済み価格）UN缶");
   assert.equal(t.displayCandidateLabel("原価900円/kg×指数0.85（推奨・新指数）"), "原価900円/kg×指数0.85（推奨・新指数）");
 });
 
 test("条件別の価格の候補は新しい表記で返る", () => {
   const t = loadApp([P("X-1", 4, "株式会社　大川", 0, { alternatives: [{ price: 15530, condition: "国内缶" }, { price: 16100, condition: "UN缶" }] })]);
   const c = t.findConditionalPriceCandidates("X-1", "株式会社　大川", 4, true);
-  assert.equal(c[0].label, "条件付き（旧特価15%UP済み価格）UN缶");
+  assert.equal(c[0].label, "要再見積り（旧特価15%UP済み価格）UN缶");
   assert.equal(c[0].price, 16100);
 });
 
@@ -68,8 +69,9 @@ test("他社価格：同じ会社の別支店を先頭、その他は安い順�
   assert.equal(r[0].sameCompany, true);
   assert.equal(r[2].sameCompany, false);
   const okawa = r.find(x => x.client === "株式会社　大川");
-  assert.equal(okawa.note, "条件付き（旧特価15%UP済み価格）");
-  assert.deepEqual(plain(okawa.prices.map(p => [p.label, p.price])), [["国内缶", 41060], ["UN缶", 41630]]);
+  // 特価欄は0円のまま出し、旧特価15%UP済みの価格は備考に入れる（並び順はその価格で決める）
+  assert.equal(okawa.note, "要再見積り（旧特価15%UP済み価格：国内缶 ¥41,060／UN缶 ¥41,630）");
+  assert.deepEqual(plain(okawa.prices.map(p => [p.label, p.price])), [["", 0]]);
   assert.equal(r[r.length - 1].isStandard, true);
   assert.equal(r[r.length - 1].prices[0].price, 46500);
 });
@@ -93,20 +95,20 @@ test("画面：他社価格がある行は「参考：他社価格」とポッ�
   assert.match(html, /参考：他社価格/);
   assert.match(html, /X-1　16kg の他のお客様の価格（2件）/);
   assert.match(html, /同じ会社/);
-  assert.match(html, /条件付き（旧特価15%UP済み価格）/);
-  assert.match(html, /国内缶 ¥41,060/);
+  assert.match(html, /要再見積り（旧特価15%UP済み価格：国内缶 ¥41,060）/);
+  assert.match(html, /<td class="p">¥0<\/td>/);
 });
 
 test("画面：価格候補リストの古い表記は新しい表記で表示する", () => {
   const t = loadApp();
   const html = t.candidateSelectHtml([{ label: "条件付き価格（UN缶）", price: 16100 }]);
-  assert.match(html, /条件付き（旧特価15%UP済み価格）UN缶：¥16,100/);
+  assert.match(html, /要再見積り（旧特価15%UP済み価格）UN缶：¥16,100/);
   assert.doesNotMatch(html, /条件付き価格（/);
 });
 test("画面：メールから作成の確認画面も新しい表記で出す", () => {
   const t = loadApp();
-  assert.equal(t.mailCondTagText(4, [{ label: "条件付き（旧特価15%UP済み価格）UN缶", price: 16100 }]),
-    "4kg 条件付き（旧特価15%UP済み価格）UN缶 ¥16,100");
+  assert.equal(t.mailCondTagText(4, [{ label: "要再見積り（旧特価15%UP済み価格）UN缶", price: 16100 }]),
+    "4kg 要再見積り（旧特価15%UP済み価格）UN缶 ¥16,100");
 });
 test("ポップアップの位置：印の右下にそろえ、画面の左右からはみ出さない", () => {
   const t = loadApp();
@@ -162,4 +164,10 @@ test("マージ：特価マスタの取込みでは、条件別の価格を最�
   assert.equal(t.Store.data.products[0].alternatives[0].price, 16000);
   assert.equal("alternatives" in t.Store.data.products[1], false);
   assert.deepEqual(r, { added: 0, updated: 2 });
+});
+test("他社価格：条件名の無い価格は「要再見積り（旧特価15%UP済み価格：¥29,560）」", () => {
+  const t = loadApp([P("X-1", 16, "杉村塗料株式会社", 0, { alternatives: [{ price: 29560, condition: "" }] })]);
+  const r = t.findOtherClientPrices("X-1", 16, "萬座塗料株式会社");
+  assert.equal(r[0].note, "要再見積り（旧特価15%UP済み価格：¥29,560）");
+  assert.equal(r[0].prices[0].price, 0);
 });

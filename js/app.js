@@ -672,9 +672,9 @@ function findSpecialPriceEntry(code, client, capacityKg){
     hasRecordedPrice(x.specialPrice)
   );
 }
-/* 条件別の価格（特価マスタの特価1〜5・条件1〜5）の表記。アプリ内のすべての場面でこの表記にする（2026-10-11 平井さんの指示）。
+/* 条件別の価格（特価マスタの特価1〜5・条件1〜5）の表記。アプリ内のすべての場面でこの表記にする（2026-10-11 平井さんの指示。「条件付き」→「要再見積り」に変更）。
    条件名（国内缶・UN缶など）があれば後ろに付ける */
-const COND_PRICE_PREFIX = "条件付き（旧特価15%UP済み価格）";
+const COND_PRICE_PREFIX = "要再見積り（旧特価15%UP済み価格）";
 function condPriceText(cond){
   const c = String(cond || "").trim();
   return (c === "特価欄空・条件付き" || c === "条件あり") ? "" : c;
@@ -682,7 +682,9 @@ function condPriceText(cond){
 function condPriceLabel(cond){ return COND_PRICE_PREFIX + condPriceText(cond); }
 // 以前に作った見積書・自動処理が書いた古い表記「条件付き価格（○○）」も、表示するときに新しい表記にする
 function displayCandidateLabel(label){
-  return String(label || "").replace(/^条件付き価格（(.*)）$/, (m, c)=> condPriceLabel(c));
+  return String(label || "")
+    .replace(/^条件付き価格（(.*)）$/, (m, c)=> condPriceLabel(c))
+    .replace(/^条件付き（旧特価15%UP済み価格）/, COND_PRICE_PREFIX);
 }
 
 /* 「参考：他社価格」：同じ品番・同じ容量の、他のお客様の価格。
@@ -712,14 +714,16 @@ function findOtherClientPrices(code, capacityKg, client){
     let prices, note;
     if(hasRecordedPrice(x.specialPrice)){ prices = [{ label: "", price: Number(x.specialPrice) }]; note = x.note || ""; }
     else if(Array.isArray(x.alternatives) && x.alternatives.length){
-      prices = x.alternatives.map(a=>({ label: condPriceText(a.condition), price: Number(a.price) }));
-      note = COND_PRICE_PREFIX;
+      // 特価欄は0円のまま出し、旧特価15%UP済みの価格は備考に「要再見積り（旧特価15%UP済み価格：国内缶 ¥15,530／UN缶 ¥16,100）」の形で入れる
+      const alts = x.alternatives.map(a=>({ label: condPriceText(a.condition), price: Number(a.price) }));
+      prices = [{ label: "", price: 0, sortPrice: Math.min(...alts.map(a=>a.price)) }];
+      note = COND_PRICE_PREFIX.replace(/）$/, "：" + alts.map(a=>(a.label ? a.label + " " : "") + yen(a.price)).join("／") + "）");
     } else continue;
-    const dupKey = (x.client || "") + "|" + prices.map(p=>p.label + p.price).join(",");
+    const dupKey = (x.client || "") + "|" + prices.map(p=>p.label + p.price).join(",") + "|" + note;
     if(seen.has(dupKey)) continue;   // 同じ取引先・同じ価格の重複行は1件にまとめる
     seen.add(dupKey);
     out.push({ client: x.client || "", prices, note, sameCompany: !!client && isSimilarClientName(x.client, client),
-               isStandard: false, sortPrice: Math.min(...prices.map(p=>p.price)) });
+               isStandard: false, sortPrice: Math.min(...prices.map(p=>p.sortPrice ?? p.price)) });
   }
   out.sort((a, b)=> (b.sameCompany - a.sameCompany) || (a.sortPrice - b.sortPrice));
   if(!out.length) return [];   // 他のお客様の価格が無ければ、標準価格だけでは出さない

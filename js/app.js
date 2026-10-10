@@ -674,7 +674,8 @@ function findSpecialPriceEntry(code, client, capacityKg){
 }
 /* 条件別の価格（特価マスタの特価1〜5・条件1〜5）の表記。アプリ内のすべての場面でこの表記にする（2026-10-11 平井さんの指示。「条件付き」→「要再見積り」に変更）。
    条件名（国内缶・UN缶など）があれば後ろに付ける */
-const COND_PRICE_PREFIX = "要再見積り（旧特価15%UP済み価格）";
+const COND_PRICE_HEAD = "要再見積り（旧特価15%UP済み価格";   // 閉じかっこの前まで（備考で「：金額」を足すため）
+const COND_PRICE_PREFIX = COND_PRICE_HEAD + "）";
 function condPriceText(cond){
   const c = String(cond || "").trim();
   return (c === "特価欄空・条件付き" || c === "条件あり") ? "" : c;
@@ -711,15 +712,18 @@ function findOtherClientPrices(code, capacityKg, client){
   for(const x of rows){
     if(!std && hasRecordedPrice(x.standardPrice)) std = Number(x.standardPrice);
     if((x.client || "") === (client || "")) continue;
-    let prices, note;
+    let prices, note, isCond = false;
     if(hasRecordedPrice(x.specialPrice)){ prices = [{ label: "", price: Number(x.specialPrice) }]; note = x.note || ""; }
     else if(Array.isArray(x.alternatives) && x.alternatives.length){
       // 特価欄は0円のまま出し、旧特価15%UP済みの価格は備考に「要再見積り（旧特価15%UP済み価格：国内缶 ¥15,530／UN缶 ¥16,100）」の形で入れる
-      const alts = x.alternatives.map(a=>({ label: condPriceText(a.condition), price: Number(a.price) }));
+      const alts = x.alternatives.map(a=>({ label: condPriceText(a.condition), price: Number(a.price) })).filter(a=> a.price > 0);
+      if(!alts.length) continue;
+      isCond = true;
       prices = [{ label: "", price: 0, sortPrice: Math.min(...alts.map(a=>a.price)) }];
-      note = COND_PRICE_PREFIX.replace(/）$/, "：" + alts.map(a=>(a.label ? a.label + " " : "") + yen(a.price)).join("／") + "）");
+      note = COND_PRICE_HEAD + "：" + alts.map(a=>(a.label ? a.label + " " : "") + yen(a.price)).join("／") + "）";
     } else continue;
-    const dupKey = (x.client || "") + "|" + prices.map(p=>p.label + p.price).join(",") + "|" + note;
+    // 条件別の価格の行は価格が0なので、備考（価格の中身）でも区別する
+    const dupKey = (x.client || "") + "|" + prices.map(p=>p.label + p.price).join(",") + (isCond ? "|" + note : "");
     if(seen.has(dupKey)) continue;   // 同じ取引先・同じ価格の重複行は1件にまとめる
     seen.add(dupKey);
     out.push({ client: x.client || "", prices, note, sameCompany: !!client && isSimilarClientName(x.client, client),
@@ -3786,7 +3790,7 @@ function buildTrialSheetGroups(quote, settings){
         refLines.push(`設定指数（${it.capacity}${it.unit||"Kg"}）：${Number(it.appliedIndex).toFixed(2)}`);
       }
       if(it.priceRef && (isHardener(it) || isThinnerProduct(it))){
-        refLines.push(`参考価格（${it.capacity}${it.unit||"Kg"}）：${it.priceRef.label} ${yen(it.priceRef.price)}`);
+        refLines.push(`参考価格（${it.capacity}${it.unit||"Kg"}）：${displayCandidateLabel(it.priceRef.label)} ${yen(it.priceRef.price)}`);
       }
     });
 

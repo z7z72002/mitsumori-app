@@ -171,3 +171,13 @@ test("他社価格：条件名の無い価格は「要再見積り（旧特価15
   assert.equal(r[0].note, "要再見積り（旧特価15%UP済み価格：¥29,560）");
   assert.equal(r[0].prices[0].price, 0);
 });
+
+test("他社価格：通常の特価の行は、備考が違っても同じ取引先・同じ価格なら1件にまとめる", () => {
+  const t = loadApp([P("X-1", 16, "萬座塗料株式会社", 40350, { note: "A" }), P("X-1", 16, "萬座塗料株式会社", 40350, { note: "B" })]);
+  assert.equal(t.findOtherClientPrices("X-1", 16, "杉村塗料株式会社").length, 1);
+});
+
+test("他社価格：条件別の価格が数値でないものは無視し、残らなければ出さない", () => {
+  const t = loadApp([P("X-1", 16, "株式会社　大川", 0, { alternatives: [{ price: "abc", condition: "国内缶" }] })]);
+  assert.deepEqual(plain(t.findOtherClientPrices("X-1", 16, "杉村塗料株式会社")), []);
+});

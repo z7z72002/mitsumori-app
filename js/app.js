@@ -3138,7 +3138,6 @@ const ViewProducts = {
         }
 
         const items = itemsFromProductRow(p);
-        const baseItem = items[0], smallItem = items[1];
         const q = {
           id: uid(), number: "", date: toDateInputValue(new Date()),
           customerCompany: "", customerPerson: "", officeIndex: 0, theme: "",
@@ -3150,7 +3149,7 @@ const ViewProducts = {
         Store.data.quotes.push(q);
         Store.save();
         App.go("editor", { quoteId: q.id });
-        if(baseItem.priceWarning || smallItem.priceWarning) toast("特価が未登録の容量があります（赤色のセルをご確認ください）", true);
+        if(items.some(it=>it.priceWarning)) toast("特価が未登録の容量があります（赤色のセルをご確認ください）", true);
       });
     });
   },

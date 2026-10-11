@@ -2226,7 +2226,7 @@ function buildQuoteItemsFromMail(code, name, client, kgs, un){
   const cost = product ? Number(product.costPerKg) || 0 : 0;
   const all = cost > 0 ? calcPriceCandidates(cost, s, lineMatch ? lineMatch.newIndex : null) : null;
   const baseSpecial = findSpecialPriceEntry(code, client, s.baseContainerKg);
-  const bigSpecial = findSpecialPriceEntry(code, client, s.bigContainerKg);
+  const bigSpecial = client ? findSpecialPriceEntry(code, client, s.bigContainerKg) : null;
   return kgs.slice().sort((a, b)=> b - a).map(kg=>{
     const item = { code, name: name || (product && product.name) || "", capacity: kg, unit, unitPrice: 0, note };
     const sp = client ? findSpecialPriceEntry(code, client, kg) : null;

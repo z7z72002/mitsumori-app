@@ -384,6 +384,48 @@ test("メール経路：4kgのUN缶が登録済みなら算出のUN缶候補は�
   assert.ok(!calcOnly(i4.calcCandidates).some(([l]) => /国内缶＋¥600/.test(l)));
 });
 
+test("メール経路：16kg特価があり国内缶も登録済み：16KG特価より算出は残り、UN缶は登録国内缶＋600円", () => {
+  const t = loadApp([
+    P("M-3", 16, "株式会社　大川", 35000),
+    P("M-3", 4, "株式会社　大川", 0, { alternatives: [{ price: 17000, condition: "国内缶" }] }),
+  ]);
+  const i4 = only(mailCands(t, [4], true, "M-3"), 4);
+  assert.deepEqual(i4.calcCandidates.filter(c => !/^原価/.test(c.label)).map(c => c.price), [17000, 17600, 18130]);
+  assert.deepEqual(calcOnly(i4.calcCandidates).slice(1), [["UN缶（国内缶＋¥600）", 17600], ["16KG特価より算出", 18130]]);
+});
+
+test("メール経路：18kg特価のみで国内缶が登録済み：算出の国内缶は付けず、UN缶は登録国内缶＋600円", () => {
+  const t = loadApp([
+    P("M-4", 18, "株式会社　大川", 39100),
+    P("M-4", 4, "株式会社　大川", 0, { alternatives: [{ price: 15530, condition: "国内缶" }] }),
+  ]);
+  const i4 = only(mailCands(t, [4], true, "M-4"), 4);
+  assert.deepEqual(calcOnly(i4.calcCandidates).map(([, p]) => p), [15530, 16130]);
+});
+
+test("メール経路：4kg特価が登録済みなら単価に入り、算出候補は付かない", () => {
+  const t = loadApp([P("M-5", 4, "株式会社　大川", 18000), P("M-5", 18, "株式会社　大川", 39100)]);
+  const i4 = only(mailCands(t, [4], true, "M-5"), 4);
+  assert.equal(i4.unitPrice, 18000);
+  assert.equal(i4.calcCandidates, undefined);
+});
+
+test("メール経路：18kg特価が数値でない・1,200円以下なら算出候補を付けない", () => {
+  ["abc", 1200].forEach((v, n) => {
+    const t = loadApp([P("M-6", 18, "株式会社　大川", v, { costPerKg: 0 })]);
+    const items = mailCands(t, [16, 4], true, "M-6");
+    assert.equal(only(items, 4).calcCandidates, undefined, String(v));
+    assert.equal(only(items, 16).calcCandidates, undefined, String(v));
+  });
+});
+
+test("メール経路：取引先が空の行の18kg特価は拾わない（取引先が分からない時に他の取引先の価格を出さない）", () => {
+  const t = loadApp([P("M-7", 18, "", 39100, { costPerKg: 0 })]);
+  const items = plain(t.buildQuoteItemsFromMail("M-7", "テスト品", "", [16, 4], true));
+  assert.equal(only(items, 4).calcCandidates, undefined);
+  assert.equal(only(items, 16).calcCandidates, undefined);
+});
+
 test("メール経路：16kg・18kgの特価が無ければ、これまでどおり原価×指数の候補だけ", () => {
   const t = loadApp([P("M-2", 4, "株式会社　大川", 0, { costPerKg: 900 })]);
   const i4 = only(mailCands(t, [4], true, "M-2"), 4);

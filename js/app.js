@@ -687,10 +687,11 @@ function addBigDerivedCandidates(baseItem, smallItem, baseMatch, smallMatch, big
   if(!(domestic > 0)) return;
   const registered = findConditionalPriceCandidates(p.code, p.client, s.smallContainerKg, true);
   const unRegistered = registered.some(c=>/UN/i.test(c.label));
-  const domesticRegistered = registered.some(c=>/国内/.test(c.label));
+  const domesticReg = registered.find(c=>/国内/.test(c.label) && isFinite(c.price) && c.price > 0);
   const add = [];
-  if(fromBig && !domesticRegistered) add.push({ label: `国内缶（${s.baseContainerKg}KG算出価格より）`, price: domestic });
-  if(!unRegistered) add.push({ label: `UN缶（国内缶＋¥${UN_CAN_ADD_FEE}）`, price: domestic + UN_CAN_ADD_FEE });
+  if(fromBig && !domesticReg) add.push({ label: `国内缶（${s.baseContainerKg}KG算出価格より）`, price: domestic });
+  // 国内缶の価格が登録済みなら、それを基準にUN缶（＋600円）を出す
+  if(!unRegistered) add.push({ label: `UN缶（国内缶＋¥${UN_CAN_ADD_FEE}）`, price: (domesticReg ? domesticReg.price : domestic) + UN_CAN_ADD_FEE });
   if(add.length) smallItem.calcCandidates = add.concat(smallItem.calcCandidates || []);
 }
 function lineHintHtml(code){

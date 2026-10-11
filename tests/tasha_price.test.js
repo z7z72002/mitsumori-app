@@ -298,6 +298,25 @@ test("コピー：4kgのUN缶の価格が登録済みなら、算出のUN缶候�
   assert.ok(!labels.some(l => /国内缶＋¥600/.test(l)));
 });
 
+test("コピー：4kgの国内缶だけ登録済みなら、UN缶は登録済みの国内缶＋600円にする（18kg特価のみ）", () => {
+  const t = loadApp([
+    P("D-8", 18, "株式会社　大川", 39100),
+    P("D-8", 4, "株式会社　大川", 0, { alternatives: [{ price: 15530, condition: "国内缶" }] }),
+  ]);
+  const items = plain(t.itemsFromProductRow(t.Store.data.products[0]));
+  assert.deepEqual(items[1].calcCandidates.map(c => [c.label, c.price]), [
+    ["要再見積り（旧特価15%UP済み価格）国内缶", 15530], ["UN缶（国内缶＋¥600）", 16130]]);
+});
+
+test("コピー：4kgの国内缶が登録済みなら、16kg特価がある場合もUN缶は登録済みの国内缶＋600円にする", () => {
+  const t = loadApp([
+    P("D-9", 16, "株式会社　大川", 35000),
+    P("D-9", 4, "株式会社　大川", 0, { alternatives: [{ price: 15530, condition: "国内缶" }] }),
+  ]);
+  const items = plain(t.itemsFromProductRow(t.Store.data.products[0]));
+  assert.deepEqual(items[1].calcCandidates.map(c => c.price), [15530, 16130]);
+});
+
 test("コピー：国内缶・UN缶ともに登録済みなら、算出の候補は付けない", () => {
   const t = loadApp([
     P("D-7", 18, "株式会社　大川", 39100),

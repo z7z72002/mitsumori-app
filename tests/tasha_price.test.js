@@ -11,7 +11,7 @@ function loadApp(products) {
   ctx.window = ctx;
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "js", "app.js"), "utf8") +
-    ";this.__t={Store,defaultData,condPriceLabel,displayCandidateLabel,findOtherClientPrices,findConditionalPriceCandidates,otherPriceButtonHtml,candidateSelectHtml,mailCondTagText,tashaPopupPosition,mergeImportedProducts,itemsFromProductRow,candidateOptionLabel,deriveFromBigPrice,UN_CAN_ADD_FEE};", ctx);
+    ";this.__t={Store,defaultData,condPriceLabel,displayCandidateLabel,findOtherClientPrices,findConditionalPriceCandidates,otherPriceButtonHtml,candidateSelectHtml,mailCondTagText,tashaPopupPosition,mergeImportedProducts,itemsFromProductRow,candidateOptionLabel,deriveFromBigPrice,UN_CAN_ADD_FEE,noteForChosenCandidate};", ctx);
   const t = ctx.__t;
   t.Store.data = t.defaultData();
   t.Store.data.products = products || [];
@@ -324,6 +324,21 @@ test("コピー：国内缶・UN缶ともに登録済みなら、算出の候補
   ]);
   const items = plain(t.itemsFromProductRow(t.Store.data.products[0]));
   assert.deepEqual(items[1].calcCandidates.map(c => c.price), [15530, 16100]);
+});
+
+test("候補を選んだ時の備考：UN缶の候補なら「(UN缶)」、国内缶の候補なら「(国内缶)」に切り替える", () => {
+  const t = loadApp();
+  assert.equal(t.noteForChosenCandidate("(国内缶)", "UN缶（国内缶＋¥600）"), "(UN缶)");
+  assert.equal(t.noteForChosenCandidate("(国内缶)", "要再見積り（旧特価15%UP済み価格）UN缶"), "(UN缶)");
+  assert.equal(t.noteForChosenCandidate("(UN缶)", "国内缶（16KG算出価格より）"), "(国内缶)");
+  assert.equal(t.noteForChosenCandidate("", "UN缶（国内缶＋¥600）"), "(UN缶)");
+});
+
+test("候補を選んだ時の備考：国内缶・UN缶と関係の無い候補や、手で書いた備考は変えない", () => {
+  const t = loadApp();
+  assert.equal(t.noteForChosenCandidate("(国内缶)", "原価900円/kg×指数0.85（推奨・新指数）"), "(国内缶)");
+  assert.equal(t.noteForChosenCandidate("(特注色)", "UN缶（国内缶＋¥600）"), "(特注色)");
+  assert.equal(t.noteForChosenCandidate("(UN缶)", "要再見積り（旧特価15%UP済み価格）"), "(UN缶)");
 });
 
 test("コピー：18kg特価が数値でなければ算出の候補を付けない", () => {

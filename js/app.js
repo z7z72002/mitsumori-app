@@ -694,6 +694,15 @@ function addBigDerivedCandidates(baseItem, smallItem, baseMatch, smallMatch, big
   if(!unRegistered) add.push({ label: `UN缶（国内缶＋¥${UN_CAN_ADD_FEE}）`, price: (domesticReg ? domesticReg.price : domestic) + UN_CAN_ADD_FEE });
   if(add.length) smallItem.calcCandidates = add.concat(smallItem.calcCandidates || []);
 }
+/* 価格候補を選んだ時の備考。UN缶の候補なら「(UN缶)」、国内缶の候補なら「(国内缶)」に切り替える（手で書いた備考は変えない） */
+function noteForChosenCandidate(note, label){
+  const cur = String(note || "").trim();
+  if(cur !== "" && cur !== "(国内缶)" && cur !== "(UN缶)") return note;
+  const l = String(label || "");
+  if(/UN缶/.test(l)) return "(UN缶)";
+  if(/国内缶/.test(l)) return "(国内缶)";
+  return note;
+}
 function lineHintHtml(code){
   const lm = matchLineCode(code, Store.data.lineCodes);
   if(!lm) return "";
@@ -4681,6 +4690,7 @@ const ViewEditor = {
           q.items[i].unitPrice = chosen.price;
           q.items[i].priceWarning = false;
           q.items[i].priceRef = { label: displayCandidateLabel(chosen.label), price: chosen.price };
+          q.items[i].note = noteForChosenCandidate(q.items[i].note, chosen.label);
           q.items[i].appliedIndex = undefined;
           q.items[i].calcCandidates = undefined;
           this.touch(q);

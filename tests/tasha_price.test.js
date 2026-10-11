@@ -11,7 +11,7 @@ function loadApp(products) {
   ctx.window = ctx;
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "js", "app.js"), "utf8") +
-    ";this.__t={Store,defaultData,condPriceLabel,displayCandidateLabel,findOtherClientPrices,findConditionalPriceCandidates,otherPriceButtonHtml,candidateSelectHtml,mailCondTagText,tashaPopupPosition,mergeImportedProducts,itemsFromProductRow,candidateOptionLabel,deriveFromBigPrice,UN_CAN_ADD_FEE,noteForChosenCandidate};", ctx);
+    ";this.__t={Store,defaultData,condPriceLabel,displayCandidateLabel,findOtherClientPrices,findConditionalPriceCandidates,otherPriceButtonHtml,candidateSelectHtml,mailCondTagText,tashaPopupPosition,mergeImportedProducts,itemsFromProductRow,candidateOptionLabel,deriveFromBigPrice,UN_CAN_ADD_FEE,noteForChosenCandidate,buildQuoteItemsFromMail};", ctx);
   const t = ctx.__t;
   t.Store.data = t.defaultData();
   t.Store.data.products = products || [];
@@ -339,6 +339,55 @@ test("候補を選んだ時の備考：国内缶・UN缶と関係の無い候補
   assert.equal(t.noteForChosenCandidate("(国内缶)", "原価900円/kg×指数0.85（推奨・新指数）"), "(国内缶)");
   assert.equal(t.noteForChosenCandidate("(特注色)", "UN缶（国内缶＋¥600）"), "(特注色)");
   assert.equal(t.noteForChosenCandidate("(UN缶)", "要再見積り（旧特価15%UP済み価格）"), "(UN缶)");
+});
+
+// ---- メールから見積書を作る経路（buildQuoteItemsFromMail）にも、18kg・16kgからの算出候補を出す ----
+const mailCands = (t, kgs, un, code = "M-1") =>
+  plain(t.buildQuoteItemsFromMail(code, "テスト品", "株式会社　大川", kgs, un));
+const only = (items, kg) => items.find(i => i.capacity === kg);
+const calcOnly = list => list.filter(c => !/^原価/.test(c.label)).map(c => [c.label, c.price]);
+
+test("メール経路：18kg特価だけで4kg・UN缶指定なら、UN缶・国内缶の算出候補が先頭に並ぶ", () => {
+  const t = loadApp([P("M-1", 18, "株式会社　大川", 39100)]);
+  const i4 = only(mailCands(t, [4], true), 4);
+  assert.equal(i4.note, "(UN缶)");
+  assert.deepEqual(calcOnly(i4.calcCandidates), [["UN缶（国内缶＋¥600）", 18240], ["国内缶（16KG算出価格より）", 17640]]);
+  assert.equal(i4.calcCandidates[0].price, 18240);
+});
+
+test("メール経路：18kg特価だけで4kg・国内缶指定なら、国内缶を先に、UN缶を後に並べる", () => {
+  const t = loadApp([P("M-1", 18, "株式会社　大川", 39100)]);
+  const i4 = only(mailCands(t, [4], false), 4);
+  assert.deepEqual(calcOnly(i4.calcCandidates), [["国内缶（16KG算出価格より）", 17640], ["UN缶（国内缶＋¥600）", 18240]]);
+});
+
+test("メール経路：18kg特価だけで16kgを依頼されたら、18kgからの逆算を候補にする", () => {
+  const t = loadApp([P("M-1", 18, "株式会社　大川", 39100)]);
+  const items = mailCands(t, [16, 4, 18], false);
+  assert.deepEqual(calcOnly(only(items, 16).calcCandidates), [["18KG特価より算出", 33690]]);
+  assert.equal(only(items, 18).unitPrice, 39100);
+});
+
+test("メール経路：16kg特価があれば16kg特価を優先して4kgを算出し、UN缶も出す（18kgがあっても）", () => {
+  const t = loadApp([P("M-1", 16, "株式会社　大川", 35000), P("M-1", 18, "株式会社　大川", 39100)]);
+  const i4 = only(mailCands(t, [4], true), 4);
+  assert.deepEqual(calcOnly(i4.calcCandidates), [["UN缶（国内缶＋¥600）", 18730], ["16KG特価より算出", 18130]]);
+});
+
+test("メール経路：4kgのUN缶が登録済みなら算出のUN缶候補は付けず、登録価格が先頭", () => {
+  const t = loadApp([
+    P("M-1", 18, "株式会社　大川", 39100),
+    P("M-1", 4, "株式会社　大川", 0, { alternatives: [{ price: 16100, condition: "UN缶" }] }),
+  ]);
+  const i4 = only(mailCands(t, [4], true), 4);
+  assert.equal(i4.calcCandidates[0].price, 16100);
+  assert.ok(!calcOnly(i4.calcCandidates).some(([l]) => /国内缶＋¥600/.test(l)));
+});
+
+test("メール経路：16kg・18kgの特価が無ければ、これまでどおり原価×指数の候補だけ", () => {
+  const t = loadApp([P("M-2", 4, "株式会社　大川", 0, { costPerKg: 900 })]);
+  const i4 = only(mailCands(t, [4], true, "M-2"), 4);
+  assert.deepEqual(calcOnly(i4.calcCandidates), []);
 });
 
 test("コピー：18kg特価が数値でなければ算出の候補を付けない", () => {

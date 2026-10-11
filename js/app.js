@@ -612,6 +612,28 @@ function deriveFromBigPrice(bigPrice, s){
   const small = roundUp10((base / s.baseContainerKg) * (s.smallContainerKg + s.smallAddKg) + s.smallAddFee);
   return { base, small, smallUN: small + UN_CAN_ADD_FEE };
 }
+/* 4kgの算出：16kg特価（baseMatch）を優先し、無ければ18kg特価（bigMatch）から逆算した16kg価格を基準にする。
+   戻り値 {base: 18kgから逆算した16kg価格（16kg特価が基準の時はnull）, domestic: 4kg国内缶, un: 4kg UN缶（登録済みならnull）, domesticRegistered: 国内缶が条件別価格で登録済みか}
+   算出できない時はnull */
+function smallDerivedPrices(code, client, baseMatch, bigMatch, s){
+  let base = null, domestic = null;
+  if(baseMatch){
+    const b = Number(baseMatch.specialPrice);
+    if(isFinite(b) && b > 0) domestic = roundUp10((b / s.baseContainerKg) * (s.smallContainerKg + s.smallAddKg) + s.smallAddFee);
+  } else if(bigMatch){
+    const d = deriveFromBigPrice(bigMatch.specialPrice, s);
+    if(d){ base = d.base; domestic = d.small; }
+  }
+  if(!(domestic > 0)) return null;
+  const registered = findConditionalPriceCandidates(code, client, s.smallContainerKg, true);
+  const unRegistered = registered.some(c=>/UN/i.test(c.label));
+  const domesticReg = registered.find(c=>/国内/.test(c.label) && isFinite(c.price) && c.price > 0);
+  return {
+    base, domestic,
+    un: unRegistered ? null : (domesticReg ? domesticReg.price : domestic) + UN_CAN_ADD_FEE,
+    domesticRegistered: !!domesticReg
+  };
+}
 function approvalLevel(index, settings){
   const maxNormal = Math.max(...settings.indices);
   if(index <= maxNormal + 1e-9) return null;
@@ -673,25 +695,17 @@ function addConditionalCandidatesToItem(it, p, cap){
    UN缶の価格が条件別価格として登録済みなら、算出のUN缶候補は付けない */
 function addBigDerivedCandidates(baseItem, smallItem, baseMatch, smallMatch, bigMatch, p, s){
   if(smallMatch) return;
-  let domestic = null, fromBig = false;
-  if(baseMatch){
-    domestic = Number(smallItem.calcCandidate);
-  } else if(bigMatch){
-    const d = deriveFromBigPrice(bigMatch.specialPrice, s);
-    if(!d) return;
+  const d = smallDerivedPrices(p.code, p.client, baseMatch, bigMatch, s);
+  if(!d) return;
+  const fromBig = d.base !== null;
+  if(fromBig){
     baseItem.calcCandidate = d.base;
     baseItem.calcCandidateLabel = `${s.bigContainerKg}KG特価より算出`;
-    domestic = d.small;
-    fromBig = true;
   }
-  if(!(domestic > 0)) return;
-  const registered = findConditionalPriceCandidates(p.code, p.client, s.smallContainerKg, true);
-  const unRegistered = registered.some(c=>/UN/i.test(c.label));
-  const domesticReg = registered.find(c=>/国内/.test(c.label) && isFinite(c.price) && c.price > 0);
   const add = [];
-  if(fromBig && !domesticReg) add.push({ label: `国内缶（${s.baseContainerKg}KG算出価格より）`, price: domestic });
+  if(fromBig && !d.domesticRegistered) add.push({ label: `国内缶（${s.baseContainerKg}KG算出価格より）`, price: d.domestic });
   // 国内缶の価格が登録済みなら、それを基準にUN缶（＋600円）を出す
-  if(!unRegistered) add.push({ label: `UN缶（国内缶＋¥${UN_CAN_ADD_FEE}）`, price: (domesticReg ? domesticReg.price : domestic) + UN_CAN_ADD_FEE });
+  if(d.un !== null) add.push({ label: `UN缶（国内缶＋¥${UN_CAN_ADD_FEE}）`, price: d.un });
   if(add.length) smallItem.calcCandidates = add.concat(smallItem.calcCandidates || []);
 }
 /* 価格候補を選んだ時の備考。UN缶の候補なら「(UN缶)」、国内缶の候補なら「(国内缶)」に切り替える（手で書いた備考は変えない） */
@@ -2212,6 +2226,7 @@ function buildQuoteItemsFromMail(code, name, client, kgs, un){
   const cost = product ? Number(product.costPerKg) || 0 : 0;
   const all = cost > 0 ? calcPriceCandidates(cost, s, lineMatch ? lineMatch.newIndex : null) : null;
   const baseSpecial = findSpecialPriceEntry(code, client, s.baseContainerKg);
+  const bigSpecial = findSpecialPriceEntry(code, client, s.bigContainerKg);
   return kgs.slice().sort((a, b)=> b - a).map(kg=>{
     const item = { code, name: name || (product && product.name) || "", capacity: kg, unit, unitPrice: 0, note };
     const sp = client ? findSpecialPriceEntry(code, client, kg) : null;
@@ -2222,8 +2237,18 @@ function buildQuoteItemsFromMail(code, name, client, kgs, un){
     }
     item.priceWarning = true;
     const cands = findConditionalPriceCandidates(code, client, kg, un);
-    if(kg === s.smallContainerKg && baseSpecial){
-      cands.push({ label: `${s.baseContainerKg}KG特価より算出`, price: roundUp10((Number(baseSpecial.specialPrice) / s.baseContainerKg) * (s.smallContainerKg + s.smallAddKg) + s.smallAddFee) });
+    if(kg === s.smallContainerKg){
+      // 4kg：16kg特価を優先して算出（無ければ18kg特価から16kgを逆算して算出）。UN缶は国内缶＋600円
+      const d = smallDerivedPrices(code, client, baseSpecial, bigSpecial, s);
+      if(d){
+        const domestic = (baseSpecial || !d.domesticRegistered)
+          ? { label: baseSpecial ? `${s.baseContainerKg}KG特価より算出` : `国内缶（${s.baseContainerKg}KG算出価格より）`, price: d.domestic } : null;
+        const unCand = d.un !== null ? { label: `UN缶（国内缶＋¥${UN_CAN_ADD_FEE}）`, price: d.un } : null;
+        (un ? [unCand, domestic] : [domestic, unCand]).forEach(c=>{ if(c) cands.push(c); });
+      }
+    } else if(kg === s.baseContainerKg && bigSpecial){
+      const d = deriveFromBigPrice(bigSpecial.specialPrice, s);
+      if(d) cands.push({ label: `${s.bigContainerKg}KG特価より算出`, price: d.base });
     }
     const bucket = kg === s.baseContainerKg ? "base" : kg === s.smallContainerKg ? "small" : kg === s.bigContainerKg ? "big" : null;
     if(all && bucket){

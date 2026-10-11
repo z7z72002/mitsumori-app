@@ -11,7 +11,7 @@ function loadApp(products) {
   ctx.window = ctx;
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "js", "app.js"), "utf8") +
-    ";this.__t={Store,defaultData,condPriceLabel,displayCandidateLabel,findOtherClientPrices,findConditionalPriceCandidates,otherPriceButtonHtml,candidateSelectHtml,mailCondTagText,tashaPopupPosition,mergeImportedProducts,itemsFromProductRow,candidateOptionLabel};", ctx);
+    ";this.__t={Store,defaultData,condPriceLabel,displayCandidateLabel,findOtherClientPrices,findConditionalPriceCandidates,otherPriceButtonHtml,candidateSelectHtml,mailCondTagText,tashaPopupPosition,mergeImportedProducts,itemsFromProductRow,candidateOptionLabel,deriveFromBigPrice,UN_CAN_ADD_FEE};", ctx);
   const t = ctx.__t;
   t.Store.data = t.defaultData();
   t.Store.data.products = products || [];
@@ -233,4 +233,83 @@ test("プルダウン：一覧の選択肢は「要再見積り」を含まな�
   assert.match(html, /旧特価15%UP済み価格 UN缶：¥16,100/);
   assert.doesNotMatch(html, /要再見積り/);
   assert.equal(t.condPriceLabel("UN缶"), "要再見積り（旧特価15%UP済み価格）UN缶");
+});
+
+// ---- 18kg特価・16kg特価からの算出：16kg（18kgから逆算）、4kg国内缶、4kg UN缶（国内缶＋600円） ----
+test("算出：18kg特価39,100円から16kg33,690円・4kg国内缶17,640円・UN缶18,240円", () => {
+  const t = loadApp();
+  const s = t.Store.data.settings;
+  assert.equal(t.UN_CAN_ADD_FEE, 600);
+  assert.deepEqual(plain(t.deriveFromBigPrice(39100, s)), { base: 33690, small: 17640, smallUN: 18240 });
+});
+
+test("算出：18kgが0円・数値でない・加算額（1,200円）以下なら算出しない", () => {
+  const t = loadApp();
+  const s = t.Store.data.settings;
+  [0, NaN, "abc", undefined, 1200, -5].forEach(v => assert.equal(t.deriveFromBigPrice(v, s), null));
+});
+
+test("コピー：18kg特価だけの製品は、16kgを逆算し、4kgに国内缶・UN缶の候補を出す", () => {
+  const t = loadApp([P("D-1", 18, "株式会社　大川", 39100)]);
+  const items = plain(t.itemsFromProductRow(t.Store.data.products[0]));
+  assert.deepEqual(items.map(i => i.capacity), [16, 4, 18]);
+  assert.equal(items[0].unitPrice, 0);
+  assert.equal(items[0].calcCandidate, 33690);
+  assert.equal(items[0].calcCandidateLabel, "18KG特価より算出");
+  assert.deepEqual(items[1].calcCandidates.map(c => [c.label, c.price]), [
+    ["国内缶（16KG算出価格より）", 17640], ["UN缶（国内缶＋¥600）", 18240]]);
+  assert.equal(items[2].unitPrice, 39100);
+  assert.equal(items[2].calcCandidates, undefined);
+});
+
+test("コピー：16kg特価と18kg特価が両方ある時は16kg特価を優先して4kg UN缶を出す", () => {
+  const t = loadApp([P("D-2", 16, "株式会社　大川", 35000), P("D-2", 18, "株式会社　大川", 39100)]);
+  const items = plain(t.itemsFromProductRow(t.Store.data.products[0]));
+  assert.equal(items[0].unitPrice, 35000);
+  assert.equal(items[0].calcCandidate, undefined);
+  assert.equal(items[1].calcCandidate, 18130);
+  assert.deepEqual(items[1].calcCandidates.map(c => [c.label, c.price]), [["UN缶（国内缶＋¥600）", 18730]]);
+});
+
+test("コピー：16kg特価だけでも4kg UN缶（国内缶＋600円）を出す", () => {
+  const t = loadApp([P("D-3", 16, "株式会社　大川", 35000)]);
+  const items = plain(t.itemsFromProductRow(t.Store.data.products[0]));
+  assert.equal(items[1].calcCandidate, 18130);
+  assert.deepEqual(items[1].calcCandidates.map(c => c.price), [18730]);
+});
+
+test("コピー：4kg特価がある時は、UN缶の算出候補を付けず、16kgは従来の逆算のまま", () => {
+  const t = loadApp([P("D-4", 4, "株式会社　大川", 18000), P("D-4", 18, "株式会社　大川", 39100)]);
+  const items = plain(t.itemsFromProductRow(t.Store.data.products[0]));
+  assert.equal(items[1].unitPrice, 18000);
+  assert.equal(items[1].calcCandidates, undefined);
+  assert.equal(items[0].calcCandidateLabel, "4KG特価より算出");
+});
+
+test("コピー：4kgのUN缶の価格が登録済みなら、算出のUN缶候補は付けずに登録された価格を出す", () => {
+  const t = loadApp([
+    P("D-5", 18, "株式会社　大川", 39100),
+    P("D-5", 4, "株式会社　大川", 0, { alternatives: [{ price: 16100, condition: "UN缶" }] }),
+  ]);
+  const items = plain(t.itemsFromProductRow(t.Store.data.products[0]));
+  const labels = items[1].calcCandidates.map(c => c.label);
+  assert.equal(items[1].calcCandidates[0].price, 16100);
+  assert.ok(labels.some(l => /国内缶（16KG算出価格より）/.test(l)));
+  assert.ok(!labels.some(l => /国内缶＋¥600/.test(l)));
+});
+
+test("コピー：国内缶・UN缶ともに登録済みなら、算出の候補は付けない", () => {
+  const t = loadApp([
+    P("D-7", 18, "株式会社　大川", 39100),
+    P("D-7", 4, "株式会社　大川", 0, { alternatives: [{ price: 15530, condition: "国内缶" }, { price: 16100, condition: "UN缶" }] }),
+  ]);
+  const items = plain(t.itemsFromProductRow(t.Store.data.products[0]));
+  assert.deepEqual(items[1].calcCandidates.map(c => c.price), [15530, 16100]);
+});
+
+test("コピー：18kg特価が数値でなければ算出の候補を付けない", () => {
+  const t = loadApp([P("D-6", 18, "株式会社　大川", "abc")]);
+  const items = plain(t.itemsFromProductRow(t.Store.data.products[0]));
+  assert.equal(items[0].calcCandidate, undefined);
+  assert.equal(items[1].calcCandidates, undefined);
 });

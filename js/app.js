@@ -603,6 +603,15 @@ function calcPriceCandidates(costPerKg, settings, recommendedIndex){
   }));
   return { gBase, hBase, base: baseCandidates, small: smallCandidates, big: bigCandidates };
 }
+/* 18kg特価から16kg価格を逆算し、4kg国内缶・4kg UN缶（国内缶＋600円）の価格を出す。算出できない時はnull */
+const UN_CAN_ADD_FEE = 600;
+function deriveFromBigPrice(bigPrice, s){
+  const big = Number(bigPrice);
+  if(!isFinite(big) || big <= 0 || big <= s.bigAddFee) return null;
+  const base = roundUp10((big - s.bigAddFee) / s.bigContainerKg * s.baseContainerKg);
+  const small = roundUp10((base / s.baseContainerKg) * (s.smallContainerKg + s.smallAddKg) + s.smallAddFee);
+  return { base, small, smallUN: small + UN_CAN_ADD_FEE };
+}
 function approvalLevel(index, settings){
   const maxNormal = Math.max(...settings.indices);
   if(index <= maxNormal + 1e-9) return null;
@@ -659,6 +668,30 @@ function addConditionalCandidatesToItem(it, p, cap){
   if(!it || !it.priceWarning) return;
   const cands = findConditionalPriceCandidates(p.code, p.client, cap, /UN/i.test(it.note || ""));
   if(cands.length) it.calcCandidates = cands.concat(it.calcCandidates || []);
+}
+/* 4kgの特価が無い時、基準の16kg価格（16kg特価を優先、無ければ18kg特価からの逆算）から、4kgの候補（国内缶・UN缶＝国内缶＋600円）を付ける。
+   UN缶の価格が条件別価格として登録済みなら、算出のUN缶候補は付けない */
+function addBigDerivedCandidates(baseItem, smallItem, baseMatch, smallMatch, bigMatch, p, s){
+  if(smallMatch) return;
+  let domestic = null, fromBig = false;
+  if(baseMatch){
+    domestic = Number(smallItem.calcCandidate);
+  } else if(bigMatch){
+    const d = deriveFromBigPrice(bigMatch.specialPrice, s);
+    if(!d) return;
+    baseItem.calcCandidate = d.base;
+    baseItem.calcCandidateLabel = `${s.bigContainerKg}KG特価より算出`;
+    domestic = d.small;
+    fromBig = true;
+  }
+  if(!(domestic > 0)) return;
+  const registered = findConditionalPriceCandidates(p.code, p.client, s.smallContainerKg, true);
+  const unRegistered = registered.some(c=>/UN/i.test(c.label));
+  const domesticRegistered = registered.some(c=>/国内/.test(c.label));
+  const add = [];
+  if(fromBig && !domesticRegistered) add.push({ label: `国内缶（${s.baseContainerKg}KG算出価格より）`, price: domestic });
+  if(!unRegistered) add.push({ label: `UN缶（国内缶＋¥${UN_CAN_ADD_FEE}）`, price: domestic + UN_CAN_ADD_FEE });
+  if(add.length) smallItem.calcCandidates = add.concat(smallItem.calcCandidates || []);
 }
 function lineHintHtml(code){
   const lm = matchLineCode(code, Store.data.lineCodes);
@@ -2811,6 +2844,7 @@ function itemsFromProductRow(p){
     if(bigMatch){
       bigItem = { code:p.code, name:p.name, capacity:s.bigContainerKg, unit, unitPrice:bigMatch.specialPrice, note:"(国内缶)" };
     }
+    addBigDerivedCandidates(baseItem, smallItem, baseMatch, smallMatch, bigMatch, p, s);
   } else {
     const unit = unitForName(p.name);
     baseItem = { code:p.code, name:p.name, capacity:s.baseContainerKg, unit, unitPrice:0, note:"(国内缶)", priceWarning:true };
@@ -2821,7 +2855,7 @@ function itemsFromProductRow(p){
     [[baseItem,s.baseContainerKg],[smallItem,s.smallContainerKg],[bigItem,s.bigContainerKg]].forEach(([it,cap])=>{
       if(!it) return;
       const cands = findSimilarClientPriceCandidates(p.code, cap, p.client);
-      if(cands.length) it.calcCandidates = cands;
+      if(cands.length) it.calcCandidates = (it.calcCandidates || []).concat(cands);
     });
   }
 
@@ -4846,6 +4880,7 @@ const ViewEditor = {
             baseItem.calcCandidate = roundUp10((smallMatch.specialPrice - s.smallAddFee) / (s.smallContainerKg + s.smallAddKg) * s.baseContainerKg);
             baseItem.calcCandidateLabel = `${s.smallContainerKg}KG特価より算出`;
           }
+          addBigDerivedCandidates(baseItem, smallItem, baseMatch, smallMatch, bigMatch, p, s);
           const bigConds = bigMatch ? [] : findConditionalPriceCandidates(p.code, p.client, s.bigContainerKg, false);
           const bigItem = bigMatch
             ? { code:p.code, name:p.name, capacity:s.bigContainerKg, unit, unitPrice:bigMatch.specialPrice, note:"(国内缶)" }
@@ -4854,7 +4889,7 @@ const ViewEditor = {
             [[baseItem,s.baseContainerKg],[smallItem,s.smallContainerKg],[bigItem,s.bigContainerKg]].forEach(([it,cap])=>{
               if(!it) return;
               const cands = findSimilarClientPriceCandidates(p.code, cap, p.client);
-              if(cands.length) it.calcCandidates = cands;
+              if(cands.length) it.calcCandidates = (it.calcCandidates || []).concat(cands);
             });
           }
           [[baseItem,s.baseContainerKg],[smallItem,s.smallContainerKg],[bigItem,s.bigContainerKg]].forEach(([it,cap])=> this.addConditionalCandidates(it, p, cap));

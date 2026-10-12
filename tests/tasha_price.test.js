@@ -426,6 +426,20 @@ test("メール経路：取引先が空の行の18kg特価は拾わない（取�
   assert.equal(only(items, 16).calcCandidates, undefined);
 });
 
+test("メール経路：4kg特価だけの製品で16kgを依頼されたら、4kg特価から16kgを逆算した候補を出す（EC-GPX79-15101 の例）", () => {
+  const t = loadApp([P("M-8", 4, "株式会社　スリードリーム", 22750, { costPerKg: 860.89 })]);
+  const items = plain(t.buildQuoteItemsFromMail("M-8", "テスト品", "株式会社　スリードリーム", [16, 4], false));
+  assert.deepEqual(calcOnly(only(items, 16).calcCandidates), [["4KG特価より算出", 47340]]);
+  assert.equal(only(items, 16).calcCandidates[0].label, "4KG特価より算出");
+  assert.equal(only(items, 4).unitPrice, 22750);
+});
+
+test("メール経路：4kg特価と18kg特価の両方がある時、16kgはコピーの経路と同じく4kg特価からの逆算を使う", () => {
+  const t = loadApp([P("M-9", 4, "株式会社　大川", 22750), P("M-9", 18, "株式会社　大川", 39100)]);
+  const i16 = only(mailCands(t, [16], false, "M-9"), 16);
+  assert.deepEqual(calcOnly(i16.calcCandidates), [["4KG特価より算出", 47340]]);
+});
+
 test("メール経路：16kg・18kgの特価が無ければ、これまでどおり原価×指数の候補だけ", () => {
   const t = loadApp([P("M-2", 4, "株式会社　大川", 0, { costPerKg: 900 })]);
   const i4 = only(mailCands(t, [4], true, "M-2"), 4);

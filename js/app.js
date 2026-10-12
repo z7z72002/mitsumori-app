@@ -2246,9 +2246,16 @@ function buildQuoteItemsFromMail(code, name, client, kgs, un){
         const unCand = d.un !== null ? { label: `UN缶（国内缶＋¥${UN_CAN_ADD_FEE}）`, price: d.un } : null;
         (un ? [unCand, domestic] : [domestic, unCand]).forEach(c=>{ if(c) cands.push(c); });
       }
-    } else if(kg === s.baseContainerKg && bigSpecial){
-      const d = deriveFromBigPrice(bigSpecial.specialPrice, s);
-      if(d) cands.push({ label: `${s.bigContainerKg}KG特価より算出`, price: d.base });
+    } else if(kg === s.baseContainerKg){
+      // 16kg：4kg特価があれば4kgから逆算（コピーの経路と同じ式）。無ければ18kg特価から逆算
+      const smallSpecial = client ? findSpecialPriceEntry(code, client, s.smallContainerKg) : null;
+      const sp4 = smallSpecial ? Number(smallSpecial.specialPrice) : NaN;
+      if(isFinite(sp4) && sp4 > s.smallAddFee){
+        cands.push({ label: `${s.smallContainerKg}KG特価より算出`, price: roundUp10((sp4 - s.smallAddFee) / (s.smallContainerKg + s.smallAddKg) * s.baseContainerKg) });
+      } else if(bigSpecial){
+        const d = deriveFromBigPrice(bigSpecial.specialPrice, s);
+        if(d) cands.push({ label: `${s.bigContainerKg}KG特価より算出`, price: d.base });
+      }
     }
     const bucket = kg === s.baseContainerKg ? "base" : kg === s.smallContainerKg ? "small" : kg === s.bigContainerKg ? "big" : null;
     if(all && bucket){

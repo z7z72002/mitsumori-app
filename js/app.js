@@ -2914,14 +2914,46 @@ function itemsFromProductRow(p){
 /* ==========================================================
    画面：原価リスト管理
    ========================================================== */
+// Kg の絞り込みで「（空欄）」を表す値（実際の Kg と重ならない文字列）
+const KG_BLANK = "__blank__";
+const productKgText = p => String(p.specialKg ?? "").trim();
+// データにある Kg を小さい順に並べた選択肢。空欄の行があれば最後に「（空欄）」
+function productKgOptions(products){
+  const kgs = Array.from(new Set(products.map(productKgText)));
+  const opts = kgs.filter(Boolean).sort((a,b)=>(Number(a)-Number(b)) || a.localeCompare(b)).map(v=>({ value:v, label:v }));
+  if(kgs.includes("")) opts.push({ value:KG_BLANK, label:"（空欄）" });
+  return opts;
+}
+// kg が空文字なら全件。KG_BLANK なら Kg が空欄の行だけ
+function filterProductsByKg(products, kg){
+  if(!kg) return products;
+  const want = kg === KG_BLANK ? "" : kg;
+  return products.filter(p=>productKgText(p) === want);
+}
+
 const ViewProducts = {
   filterCode: "",
   filterClient: "",
+  filterKg: "",
   DISPLAY_LIMIT: 200,
   masterFolderHandle: null,
 
+  // 品番・品名の検索語が変わったら、Kg の選択は「すべて」に戻す
+  setCodeFilter(value){
+    if(value !== this.filterCode) this.filterKg = "";
+    this.filterCode = value;
+  },
+  // CSV / Excel の書き出し対象（Kg の絞り込みだけを反映する）
+  exportTargets(){
+    return filterProductsByKg(Store.data.products, this.filterKg);
+  },
+
   render(){
-    const list = Store.data.products.filter(p=>{
+    const kgOptions = productKgOptions(Store.data.products);
+    if(this.filterKg && !kgOptions.some(o=>o.value === this.filterKg)) this.filterKg = "";
+    const kgSelectHtml = `<select id="product-filter-kg" class="kg-filter" title="Kgで絞り込み"><option value="">すべて</option>${
+      kgOptions.map(o=>`<option value="${escapeHtml(o.value)}"${o.value === this.filterKg ? " selected" : ""}>${escapeHtml(o.label)}</option>`).join("")}</select>`;
+    const list = filterProductsByKg(Store.data.products, this.filterKg).filter(p=>{
       const t1 = normalizeForSearch(this.filterCode);
       const t2 = normalizeForSearch(this.filterClient);
       const match1 = !t1 || normalizeForSearch(p.code+p.name).includes(t1);
@@ -3002,7 +3034,7 @@ const ViewProducts = {
       ${truncated ? `<p class="hint" style="margin:0 0 8px;">検索結果 ${list.length.toLocaleString()} 件中、上位 ${this.DISPLAY_LIMIT} 件を表示しています。絞り込み条件を追加すると対象の行が見つかりやすくなります。</p>` : ""}
       <div class="card">
         <table class="grid item-edit-table" style="font-size:13px;">
-          <thead><tr><th style="width:13%;">品番</th><th style="width:17%;">品名</th><th style="width:5%;">Kg</th><th style="width:7%;">特価</th><th style="width:11%;">取引先</th><th style="width:8%;">原価（円/kg）</th><th style="width:8%;">標準価格</th><th>備考</th><th style="width:70px;">操作</th></tr></thead>
+          <thead><tr><th style="width:13%;">品番</th><th style="width:17%;">品名</th><th style="width:8%;white-space:nowrap;">Kg ${kgSelectHtml}</th><th style="width:7%;">特価</th><th style="width:11%;">取引先</th><th style="width:8%;">原価（円/kg）</th><th style="width:8%;">標準価格</th><th>備考</th><th style="width:70px;">操作</th></tr></thead>
           <tbody>${rows || (Store.pendingProductFileHandle
             ? `<tr><td colspan="9" style="text-align:center;color:#c0392b;padding:30px;">商品データファイルとの連携が切れているため表示できません。画面のどこかをクリックするか、上の「今すぐ再連携」ボタンを押してください</td></tr>`
             : `<tr><td colspan="9" style="text-align:center;color:#888;padding:30px;">該当する製品がありません</td></tr>`)}</tbody>
@@ -3020,7 +3052,7 @@ const ViewProducts = {
     const scheduleCodeFilter = (value)=>{
       clearTimeout(this._searchTimer);
       this._searchTimer = setTimeout(()=>{
-        this.filterCode = value;
+        this.setCodeFilter(value);
         App.render();
         setTimeout(()=>{ const el=document.getElementById("product-search-code"); el.focus(); el.selectionStart=el.selectionEnd=el.value.length; },0);
       }, 250);
@@ -3043,6 +3075,11 @@ const ViewProducts = {
     clientInput.addEventListener("compositionend", (e)=>{ composingClient = false; scheduleClientFilter(e.target.value); });
     clientInput.addEventListener("input", (e)=>{ if(composingClient) return; scheduleClientFilter(e.target.value); });
     clientInput.addEventListener("change", (e)=>{ composingClient = false; scheduleClientFilter(e.target.value); });
+
+    document.getElementById("product-filter-kg").addEventListener("change", (e)=>{
+      this.filterKg = e.target.value;
+      App.render();
+    });
 
     const reconnectProductFileBtn = document.getElementById("btn-reconnect-product-file");
     if(reconnectProductFileBtn) reconnectProductFileBtn.addEventListener("click", async ()=>{
@@ -3111,10 +3148,10 @@ const ViewProducts = {
     });
 
     document.getElementById("btn-export-csv").addEventListener("click", ()=>{
-      downloadFile("原価リスト.csv", buildProductsCsv(Store.data.products), "text/csv;charset=utf-8");
+      downloadFile("原価リスト.csv", buildProductsCsv(this.exportTargets()), "text/csv;charset=utf-8");
     });
     document.getElementById("btn-export-xlsx").addEventListener("click", ()=>{
-      buildProductsXlsx(Store.data.products);
+      buildProductsXlsx(this.exportTargets());
     });
 
     const fileInput = document.getElementById("file-import");

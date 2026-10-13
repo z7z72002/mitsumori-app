@@ -74,6 +74,28 @@ test("品番・品名の検索語が同じままなら、Kgの選択は残る", 
   assert.equal(t.ViewProducts.filterKg, "16");
 });
 
+test("Kgが数値・文字列・\"16.0\"で混ざっていても、同じ値は一つの選択肢にまとまり、絞り込みでも同じ扱い", () => {
+  const t = loadApp([P("A-1", 16, "甲社"), P("A-2", "16", "乙社"), P("A-3", "16.0", "丙社"), P("A-4", 4, "甲社")]);
+  assert.deepEqual(plain(t.productKgOptions(t.Store.data.products)).map(o => o.value), ["4", "16"]);
+  assert.equal(t.filterProductsByKg(t.Store.data.products, "16").length, 3);
+});
+
+test("選んでいたKgがデータから無くなったら「すべて」に戻る", () => {
+  const t = loadApp(DATA());
+  t.ViewProducts.filterKg = "20";
+  const html = t.ViewProducts.render();
+  assert.equal(t.ViewProducts.filterKg, "");
+  assert.equal((html.match(/<tr data-id=/g) || []).length, 6);
+});
+
+test("（空欄）を選ぶと、Kgが空欄の行だけが表示される", () => {
+  const t = loadApp(DATA());
+  t.ViewProducts.filterKg = t.KG_BLANK;
+  const html = t.ViewProducts.render();
+  assert.equal((html.match(/<tr data-id=/g) || []).length, 1);
+  assert.match(html, /<option value="__blank__" selected>（空欄）<\/option>/);
+});
+
 test("書き出しの対象：Kgの絞り込みだけを反映し、文字検索は反映しない", () => {
   const t = loadApp(DATA());
   t.ViewProducts.filterKg = "16"; t.ViewProducts.filterCode = "A-1"; t.ViewProducts.filterClient = "甲社";

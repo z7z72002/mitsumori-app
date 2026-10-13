@@ -2916,11 +2916,18 @@ function itemsFromProductRow(p){
    ========================================================== */
 // Kg の絞り込みで「（空欄）」を表す値（実際の Kg と重ならない文字列）
 const KG_BLANK = "__blank__";
-const productKgText = p => String(p.specialKg ?? "").trim();
-// データにある Kg を小さい順に並べた選択肢。空欄の行があれば最後に「（空欄）」
+// 数字として読める Kg は "16.0" も 16 も "16" にそろえる
+function productKgText(p){
+  const s = String(p.specialKg ?? "").trim();
+  return s !== "" && isFinite(Number(s)) ? String(Number(s)) : s;
+}
+// データにある Kg を小さい順に並べた選択肢（数字でない値は後ろ）。空欄の行があれば最後に「（空欄）」
 function productKgOptions(products){
   const kgs = Array.from(new Set(products.map(productKgText)));
-  const opts = kgs.filter(Boolean).sort((a,b)=>(Number(a)-Number(b)) || a.localeCompare(b)).map(v=>({ value:v, label:v }));
+  const isNum = v => isFinite(Number(v));
+  const opts = kgs.filter(Boolean).sort((a,b)=>
+    isNum(a) && isNum(b) ? Number(a)-Number(b) : isNum(a) ? -1 : isNum(b) ? 1 : a.localeCompare(b, "ja")
+  ).map(v=>({ value:v, label:v }));
   if(kgs.includes("")) opts.push({ value:KG_BLANK, label:"（空欄）" });
   return opts;
 }
@@ -3077,8 +3084,12 @@ const ViewProducts = {
     clientInput.addEventListener("change", (e)=>{ composingClient = false; scheduleClientFilter(e.target.value); });
 
     document.getElementById("product-filter-kg").addEventListener("change", (e)=>{
+      // 品番の検索が待ち中なら先に反映してから Kg を選ぶ（後から検索が走って選んだ Kg が消えないように）
+      clearTimeout(this._searchTimer);
+      this.setCodeFilter(codeInput.value);
       this.filterKg = e.target.value;
       App.render();
+      setTimeout(()=>{ const el=document.getElementById("product-filter-kg"); if(el) el.focus(); },0);
     });
 
     const reconnectProductFileBtn = document.getElementById("btn-reconnect-product-file");

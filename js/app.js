@@ -2914,28 +2914,17 @@ function itemsFromProductRow(p){
 /* ==========================================================
    画面：原価リスト管理
    ========================================================== */
-// Kg の絞り込みで「（空欄）」を表す値（実際の Kg と重ならない文字列）
-const KG_BLANK = "__blank__";
+// Kg の絞り込みの選択肢（この順で固定。データに無い Kg も出す）
+const PRODUCT_KG_CHOICES = ["18", "16", "13", "4", "1.6", "1", "0.4"];
 // 数字として読める Kg は "16.0" も 16 も "16" にそろえる
 function productKgText(p){
   const s = String(p.specialKg ?? "").trim();
   return s !== "" && isFinite(Number(s)) ? String(Number(s)) : s;
 }
-// データにある Kg を小さい順に並べた選択肢（数字でない値は後ろ）。空欄の行があれば最後に「（空欄）」
-function productKgOptions(products){
-  const kgs = Array.from(new Set(products.map(productKgText)));
-  const isNum = v => isFinite(Number(v));
-  const opts = kgs.filter(Boolean).sort((a,b)=>
-    isNum(a) && isNum(b) ? Number(a)-Number(b) : isNum(a) ? -1 : isNum(b) ? 1 : a.localeCompare(b, "ja")
-  ).map(v=>({ value:v, label:v }));
-  if(kgs.includes("")) opts.push({ value:KG_BLANK, label:"（空欄）" });
-  return opts;
-}
-// kg が空文字なら全件。KG_BLANK なら Kg が空欄の行だけ
+// kg が空文字なら全件
 function filterProductsByKg(products, kg){
   if(!kg) return products;
-  const want = kg === KG_BLANK ? "" : kg;
-  return products.filter(p=>productKgText(p) === want);
+  return products.filter(p=>productKgText(p) === kg);
 }
 
 const ViewProducts = {
@@ -2956,10 +2945,9 @@ const ViewProducts = {
   },
 
   render(){
-    const kgOptions = productKgOptions(Store.data.products);
-    if(this.filterKg && !kgOptions.some(o=>o.value === this.filterKg)) this.filterKg = "";
+    if(this.filterKg && !PRODUCT_KG_CHOICES.includes(this.filterKg)) this.filterKg = "";
     const kgSelectHtml = `<select id="product-filter-kg" class="kg-filter" title="Kgで絞り込み"><option value="">すべて</option>${
-      kgOptions.map(o=>`<option value="${escapeHtml(o.value)}"${o.value === this.filterKg ? " selected" : ""}>${escapeHtml(o.label)}</option>`).join("")}</select>`;
+      PRODUCT_KG_CHOICES.map(v=>`<option value="${v}"${v === this.filterKg ? " selected" : ""}>${v}</option>`).join("")}</select>`;
     const list = filterProductsByKg(Store.data.products, this.filterKg).filter(p=>{
       const t1 = normalizeForSearch(this.filterCode);
       const t2 = normalizeForSearch(this.filterClient);

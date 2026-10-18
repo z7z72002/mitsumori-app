@@ -7,7 +7,8 @@ const fs = require("fs"), path = require("path"), vm = require("vm");
 function loadApp(quotes) {
   const noop = () => {};
   const el = { addEventListener: noop, querySelector: () => null, querySelectorAll: () => [], getElementById: () => null, createElement: () => ({ style: {} }), body: { appendChild: noop } };
-  const ctx = { document: el, localStorage: { getItem: () => null, setItem: noop }, indexedDB: {}, navigator: {}, console, setTimeout, clearTimeout, Blob: function () {}, URL: {} };
+  // showDirectoryPicker を入れて、フォルダ機能が使えるブラウザ（Edge）と同じ表示にする
+  const ctx = { document: el, localStorage: { getItem: () => null, setItem: noop }, indexedDB: {}, navigator: {}, console, setTimeout, clearTimeout, Blob: function () {}, URL: {}, showDirectoryPicker: noop };
   ctx.window = ctx;
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "js", "app.js"), "utf8") +
@@ -30,6 +31,8 @@ test("見積書一覧：今すぐ取込む・見積書をエクスポート・�
     assert.doesNotMatch(html, new RegExp(`id="${id}"`), id);
   }
   assert.doesNotMatch(html, /保存フォルダ/);
+  assert.match(html, /id="btn-set-autoimport"[^>]*>自動取込フォルダを変更</);
+  assert.match(html, /自動取込フォルダ：<strong>見積取込待ち<\/strong>/);
   assert.match(html, /id="btn-new-quote"/);
   assert.match(html, /id="btn-mail-quote"/);
 });
@@ -37,6 +40,14 @@ test("見積書一覧：今すぐ取込む・見積書をエクスポート・�
 test("見積書一覧：ゴミ箱が0件でも「ゴミ箱を表示（0件）」を出す", () => {
   const t = loadApp([Q("q1")]);
   assert.match(t.ViewQuotes.render(), /id="btn-show-trash"[^>]*>🗑 ゴミ箱を表示（0件）</);
+});
+
+test("見積書一覧：ゴミ箱を表示中は「見積書一覧に戻る」だけで、ゴミ箱を表示ボタンは出ない", () => {
+  const t = loadApp([Q("q1", true)]);
+  t.ViewQuotes.showTrash = true;
+  const html = t.ViewQuotes.render();
+  assert.match(html, /id="btn-back-to-list"/);
+  assert.doesNotMatch(html, /id="btn-show-trash"/);
 });
 
 test("見積書一覧：ゴミ箱に入っている件数を出す", () => {

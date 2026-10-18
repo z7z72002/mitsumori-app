@@ -1589,7 +1589,10 @@ const App = {
         if(document.visibilityState !== "visible") return;
         const handle = ViewQuotes.autoImportHandle;
         if(handle && await queryFilePermissionSilent(handle)) this.runAutoImport({ silentIfNone: true });
-        else if(handle){ ViewQuotes.autoImportPending = true; this.armAutoImport(); }   // 許可が切れていたら、次のクリックで確認して取込む
+        else if(handle && !this._autoImportDenied){   // 許可が切れていたら、次のクリックで確認して取込む（断られた後はしない）
+          ViewQuotes.autoImportPending = true; this.armAutoImport();
+          if(this.view === "quotes") this.render();
+        }
         this.maybeRunMasterSync();
       });
       // 特価マスタの自動更新フォルダ：許可が残っていれば確認。残っていなければ最初のクリック時に確認する。
@@ -1727,19 +1730,22 @@ const App = {
   armAutoImport(){
     if(this._autoImportArmed) return;
     this._autoImportArmed = true;
-    const tryImport = async ()=>{
+    const tryImport = async (ev)=>{
       document.removeEventListener("click", tryImport, true);
       document.removeEventListener("keydown", tryImport, true);
       this._autoImportArmed = false;
       const handle = ViewQuotes.autoImportHandle;
       if(!handle) return;
+      // 「自動取込フォルダを変更」を押したクリックでは確認しない（フォルダ選択の画面とぶつかるため。ボタン側で取込む）
+      if(ev && ev.target && ev.target.closest && ev.target.closest("#btn-set-autoimport")) return;
       try{
         if(!(await ensureDirPermission(handle))){
-          // 「今すぐ取込む」は廃止（2026-10-19）。次に画面をクリックした時にもう一度確認する
-          toast("自動取込フォルダへのアクセスが許可されませんでした。画面をクリックすると、もう一度確認します", true);
-          setTimeout(()=> this.armAutoImport(), 0);
+          // 「今すぐ取込む」は廃止（2026-10-19）。断られた後は操作のたびに確認を出さないよう、自動では再確認しない
+          this._autoImportDenied = true;
+          toast("自動取込フォルダへのアクセスが許可されませんでした。「自動取込フォルダを変更」から設定し直してください", true);
           return;
         }
+        this._autoImportDenied = false;
         ViewQuotes.autoImportPending = false;
         await this.runAutoImport({ silentIfNone: true });
         if(this.view === "quotes") this.render();
@@ -2667,6 +2673,7 @@ const ViewQuotes = {
         await saveAutoImportHandle(handle);
         this.autoImportHandle = handle;
         this.autoImportPending = false;
+        App._autoImportDenied = false;   // 設定し直したので、許可を断った記録は消す
         toast(`自動取込フォルダを「${handle.name}」に設定しました`);
         await App.runAutoImport({ silentIfNone: true });
         App.render();

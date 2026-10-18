@@ -1589,6 +1589,7 @@ const App = {
         if(document.visibilityState !== "visible") return;
         const handle = ViewQuotes.autoImportHandle;
         if(handle && await queryFilePermissionSilent(handle)) this.runAutoImport({ silentIfNone: true });
+        else if(handle){ ViewQuotes.autoImportPending = true; this.armAutoImport(); }   // 許可が切れていたら、次のクリックで確認して取込む
         this.maybeRunMasterSync();
       });
       // 特価マスタの自動更新フォルダ：許可が残っていれば確認。残っていなければ最初のクリック時に確認する。
@@ -1734,7 +1735,9 @@ const App = {
       if(!handle) return;
       try{
         if(!(await ensureDirPermission(handle))){
-          toast("自動取込フォルダへのアクセスが許可されませんでした。「今すぐ取込む」ボタンから再度お試しください", true);
+          // 「今すぐ取込む」は廃止（2026-10-19）。次に画面をクリックした時にもう一度確認する
+          toast("自動取込フォルダへのアクセスが許可されませんでした。画面をクリックすると、もう一度確認します", true);
+          setTimeout(()=> this.armAutoImport(), 0);
           return;
         }
         ViewQuotes.autoImportPending = false;
@@ -2555,9 +2558,6 @@ const ViewQuotes = {
           </div>
           ${(!this.showTrash && FS_ACCESS_SUPPORTED) ? `
           <div class="sub" style="margin-top:2px;">
-            保存フォルダ：${this.folderHandle ? `<strong>${escapeHtml(this.folderHandle.name)}</strong>` : "未設定（エクスポート/インポートのたびに保存先を選びます）"}
-          </div>
-          <div class="sub" style="margin-top:2px;">
             自動取込フォルダ：${this.autoImportHandle
               ? `<strong>${escapeHtml(this.autoImportHandle.name)}</strong>（置かれた見積書を自動で一覧に反映します${this.autoImportPending ? "。画面をクリックすると取込みます" : ""}）`
               : "未設定"}
@@ -2566,13 +2566,9 @@ const ViewQuotes = {
         <div class="btn-row">
           ${this.showTrash
             ? `<button class="btn ghost" id="btn-back-to-list">← 見積書一覧に戻る</button>`
-            : `${trashCount>0?`<button class="btn ghost" id="btn-show-trash">🗑 ゴミ箱を表示（${trashCount}件）</button>`:""}
+            : `<button class="btn ghost" id="btn-show-trash">🗑 ゴミ箱を表示（${trashCount}件）</button>
                ${selectedCount>0?`<button class="btn danger" id="btn-delete-selected">選択した${selectedCount}件を削除</button>`:""}
-               ${FS_ACCESS_SUPPORTED?`<button class="btn ghost" id="btn-set-folder">${this.folderHandle?"保存フォルダを変更":"共有フォルダを設定"}</button>`:""}
                ${FS_ACCESS_SUPPORTED?`<button class="btn ghost" id="btn-set-autoimport">${this.autoImportHandle?"自動取込フォルダを変更":"自動取込フォルダを設定"}</button>`:""}
-               ${(FS_ACCESS_SUPPORTED && this.autoImportHandle)?`<button class="btn" id="btn-run-autoimport">今すぐ取込む</button>`:""}
-               <button class="btn" id="btn-export-quotes">見積書をエクスポート</button>
-               <button class="btn" id="btn-import-quotes">見積書をインポート</button>
                <button class="btn primary" id="btn-new-quote">＋ 新規見積書を作成</button>
                <button class="btn primary" id="btn-mail-quote" title="Outlookのメールをこのボタン（または一覧の画面）にドラッグするか、クリックして読み込みます">📧 メールから作成</button>`}
         </div>
@@ -2587,8 +2583,7 @@ const ViewQuotes = {
           <div class="big">${this.showTrash?"🗑":"📄"}</div>
           ${this.showTrash ? "ゴミ箱は空です。" : "見積書がまだありません。「新規見積書を作成」から始めましょう。"}
         </div>`}
-      </div>
-      <input type="file" id="quotes-file-import" accept=".json" style="display:none;">`;
+      </div>`;
   },
 
   bind(){
@@ -2663,21 +2658,8 @@ const ViewQuotes = {
       toast(`${targets.length}件をゴミ箱に移動しました`);
     });
 
-    const setFolderBtn = document.getElementById("btn-set-folder");
-    if(setFolderBtn) setFolderBtn.addEventListener("click", async ()=>{
-      try{
-        const handle = await window.showDirectoryPicker({ mode: "readwrite" });
-        await saveDirHandle(handle);
-        this.folderHandle = handle;
-        App.render();
-        toast(`保存フォルダを「${handle.name}」に設定しました`);
-      }catch(err){
-        if(err && err.name === "AbortError") return;
-        console.error(err);
-        toast("フォルダの設定に失敗しました: " + err.message, true);
-      }
-    });
-
+    // 「共有フォルダを設定」「今すぐ取込む」「見積書をエクスポート」「見積書をインポート」は廃止（2026-10-19 平井さんの指示）。
+    // 自動取込フォルダの見積は、アプリを開いた時・画面をクリックした時に自動で取込む
     const setAutoImportBtn = document.getElementById("btn-set-autoimport");
     if(setAutoImportBtn) setAutoImportBtn.addEventListener("click", async ()=>{
       try{
@@ -2693,82 +2675,6 @@ const ViewQuotes = {
         console.error(err);
         toast("フォルダの設定に失敗しました: " + err.message, true);
       }
-    });
-
-    const runAutoImportBtn = document.getElementById("btn-run-autoimport");
-    if(runAutoImportBtn) runAutoImportBtn.addEventListener("click", async ()=>{
-      try{
-        if(!(await ensureDirPermission(this.autoImportHandle))){
-          toast("自動取込フォルダへのアクセスが許可されませんでした", true);
-          return;
-        }
-        this.autoImportPending = false;
-        await App.runAutoImport({ silentIfNone: false });
-      }catch(err){
-        console.error(err);
-        toast("取込に失敗しました: " + err.message, true);
-      }
-    });
-
-    const exportBtn = document.getElementById("btn-export-quotes");
-    if(exportBtn) exportBtn.addEventListener("click", async ()=>{
-      const targets = Store.data.quotes.filter(q=>!q.deletedAt);
-      if(!targets.length){ toast("エクスポートする見積書がありません", true); return; }
-      const json = buildQuotesJson(targets);
-      const filename = `見積書エクスポート_${toDateInputValue(new Date()).replace(/-/g,"")}.json`;
-
-      if(this.folderHandle){
-        try{
-          if(await ensureDirPermission(this.folderHandle)){
-            const fileHandle = await this.folderHandle.getFileHandle(filename, { create: true });
-            const writable = await fileHandle.createWritable();
-            await writable.write(json);
-            await writable.close();
-            toast(`${targets.length}件を「${this.folderHandle.name}」フォルダに保存しました`);
-            return;
-          }
-        }catch(err){
-          console.error(err);
-        }
-      }
-      downloadFile(filename, json, "application/json;charset=utf-8");
-      toast(`${targets.length}件をエクスポートしました`);
-    });
-
-    const importFileInput = document.getElementById("quotes-file-import");
-    const importBtn = document.getElementById("btn-import-quotes");
-    const runImport = async (text)=>{
-      try{
-        const imported = parseQuotesJson(text);
-        if(!imported.length){ toast("取込めるデータが見つかりませんでした", true); return; }
-        this.showImportModal(imported);
-      }catch(err){
-        console.error(err);
-        toast("取込に失敗しました: " + err.message, true);
-      }
-    };
-    if(importBtn) importBtn.addEventListener("click", async ()=>{
-      if(this.folderHandle){
-        try{
-          const [fileHandle] = await window.showOpenFilePicker({
-            startIn: this.folderHandle,
-            types: [{ description: "見積書エクスポート", accept: { "application/json": [".json"] } }]
-          });
-          const file = await fileHandle.getFile();
-          runImport(await file.text());
-          return;
-        }catch(err){
-          if(err && err.name === "AbortError") return;
-          console.error(err);
-        }
-      }
-      importFileInput.click();
-    });
-    if(importFileInput) importFileInput.addEventListener("change", async ()=>{
-      const file = importFileInput.files[0];
-      if(!file) return;
-      await runImport(await file.text());
-      importFileInput.value = "";
     });
 
     document.querySelectorAll("#view-root tbody tr[data-id]").forEach(tr=>{

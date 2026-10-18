@@ -90,10 +90,11 @@ test("品番・品名の検索語が同じままなら、Kgの選択は残る", 
   assert.equal(t.ViewProducts.filterKg, "16");
 });
 
-test("書き出しの対象：Kgの絞り込みだけを反映し、文字検索は反映しない", () => {
+// 2026-10-19 平井さんの指示で「Excel はその時の検索結果のみ」に変更（Kg・品番品名・取引先のすべてを反映）
+test("書き出しの対象：Kg・品番品名・取引先の検索結果だけ", () => {
   const t = loadApp(DATA());
   t.ViewProducts.filterKg = "16"; t.ViewProducts.filterCode = "A-1"; t.ViewProducts.filterClient = "甲社";
-  assert.deepEqual(plain(t.ViewProducts.exportTargets()).map(p => p.id), ["A-1-16-甲社", "B-2-16-丙社"]);
-  t.ViewProducts.filterKg = "";
+  assert.deepEqual(plain(t.ViewProducts.exportTargets()).map(p => p.id), ["A-1-16-甲社"]);
+  t.ViewProducts.filterKg = ""; t.ViewProducts.filterCode = ""; t.ViewProducts.filterClient = "";
   assert.equal(t.ViewProducts.exportTargets().length, 7);
 });

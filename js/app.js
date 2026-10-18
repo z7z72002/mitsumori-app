@@ -2939,22 +2939,26 @@ const ViewProducts = {
     if(value !== this.filterCode) this.filterKg = "";
     this.filterCode = value;
   },
-  // CSV / Excel の書き出し対象（Kg の絞り込みだけを反映する）
+  // 画面の検索条件（品番・品名、取引先、Kg）に合う製品すべて（表示の上限200件では切らない）
+  filteredList(){
+    const t1 = normalizeForSearch(this.filterCode);
+    const t2 = normalizeForSearch(this.filterClient);
+    return filterProductsByKg(Store.data.products, this.filterKg).filter(p=>{
+      const match1 = !t1 || normalizeForSearch(p.code+p.name).includes(t1);
+      const match2 = !t2 || normalizeForSearch(p.client||"").includes(t2);
+      return match1 && match2;
+    });
+  },
+  // Excel の書き出し対象：その時の検索結果だけ（2026-10-19 平井さんの指示）
   exportTargets(){
-    return filterProductsByKg(Store.data.products, this.filterKg);
+    return this.filteredList();
   },
 
   render(){
     if(this.filterKg && !PRODUCT_KG_CHOICES.includes(this.filterKg)) this.filterKg = "";
     const kgSelectHtml = `<select id="product-filter-kg" class="kg-filter" title="Kgで絞り込み"><option value="">すべて</option>${
       PRODUCT_KG_CHOICES.map(v=>`<option value="${v}"${v === this.filterKg ? " selected" : ""}>${v}</option>`).join("")}</select>`;
-    const list = filterProductsByKg(Store.data.products, this.filterKg).filter(p=>{
-      const t1 = normalizeForSearch(this.filterCode);
-      const t2 = normalizeForSearch(this.filterClient);
-      const match1 = !t1 || normalizeForSearch(p.code+p.name).includes(t1);
-      const match2 = !t2 || normalizeForSearch(p.client||"").includes(t2);
-      return match1 && match2;
-    });
+    const list = this.filteredList();
     const truncated = list.length > this.DISPLAY_LIMIT;
     const shown = truncated ? list.slice(0, this.DISPLAY_LIMIT) : list;
 
@@ -2978,7 +2982,7 @@ const ViewProducts = {
       <div class="page-header">
         <div>
           <h1>特価/原価管理リスト</h1>
-          <div class="sub">製品の原価（円/kg）を管理します。一覧の内容は直接編集できません。更新はCSV / Excel ファイルの取込みで行ってください（全 ${Store.data.products.length} 件）</div>
+          <div class="sub">製品の原価（円/kg）を管理します。一覧の内容は直接編集できません。更新は「特価マスタファイルを取込む」で行ってください（全 ${Store.data.products.length} 件）</div>
           ${FS_ACCESS_SUPPORTED ? `
           <div class="sub" style="margin-top:2px;">
             商品データファイル：${
@@ -3001,9 +3005,7 @@ const ViewProducts = {
           <button class="btn ghost" id="btn-save-product-file">今のデータを新しいファイルに保存</button>
           ${Store.productFileActive ? `<button class="btn ghost" id="btn-unlink-product-file">連携を解除</button>` : ""}
           ` : ""}
-          <button class="btn" id="btn-export-csv">CSVで書き出す</button>
-          <button class="btn" id="btn-export-xlsx">Excelで書き出す</button>
-          <button class="btn primary" id="btn-import">CSV / Excelから取込む</button>
+          <button class="btn" id="btn-export-xlsx" title="今の検索条件（品番・品名、取引先、Kg）に合う製品だけを Excel に書き出します">Excelで書き出す（検索結果のみ）</button>
           <button class="btn primary" id="btn-import-master">特価マスタファイルを取込む</button>
           ${FS_ACCESS_SUPPORTED ? `
           <button class="btn ghost" id="btn-set-master-folder">${this.masterFolderHandle ? "特価マスタの自動更新フォルダを変更" : "特価マスタの自動更新フォルダを設定"}</button>
@@ -3018,9 +3020,6 @@ const ViewProducts = {
           <datalist id="product-client-datalist">${clientDatalistHtml}</datalist>
         </div>
         <div class="format-help">
-          取込用ファイルの列見出し： <code>品番</code>, <code>品名</code>, <code>Kg</code>, <code>特価</code>, <code>取引先</code>, <code>原価</code>, <code>標準価格</code>, <code>備考</code>（順不同・「Kg」「特価」「取引先」「標準価格」「備考」は省略可）。
-          「<code>製品コード</code>」は品番、「<code>製品名</code>」は品名として自動的に扱われます。
-          既存の品番と一致する行は上書き、新しい品番は追加されます。<br>
           「特価マスタファイルを取込む」は、社内システムがそのまま出力する形式（パスワード保護されていても対応）を直接読み込み、品番とKgの分解、特価0円の品番への備考自動作成（次回価格見直し等）まで自動で行います。
         </div>
       </div>
@@ -3035,7 +3034,6 @@ const ViewProducts = {
             : `<tr><td colspan="9" style="text-align:center;color:#888;padding:30px;">該当する製品がありません</td></tr>`)}</tbody>
         </table>
       </div>
-      <input type="file" id="file-import" accept=".csv,.xlsx,.xls" style="display:none;">
     `;
   },
 
@@ -3146,30 +3144,11 @@ const ViewProducts = {
       toast("商品データファイルとの連携を解除しました（以後はブラウザ内に保存されます）");
     });
 
-    document.getElementById("btn-export-csv").addEventListener("click", ()=>{
-      downloadFile("原価リスト.csv", buildProductsCsv(this.exportTargets()), "text/csv;charset=utf-8");
-    });
+    // 「CSVで書き出す」「CSV / Excelから取込む」は廃止（2026-10-19）。Excel はその時の検索結果だけを書き出す
     document.getElementById("btn-export-xlsx").addEventListener("click", ()=>{
-      buildProductsXlsx(this.exportTargets());
-    });
-
-    const fileInput = document.getElementById("file-import");
-    document.getElementById("btn-import").addEventListener("click", ()=> fileInput.click());
-    fileInput.addEventListener("change", async ()=>{
-      const file = fileInput.files[0];
-      if(!file) return;
-      try{
-        let rows;
-        if(/\.csv$/i.test(file.name)) rows = parseCsv(await file.text());
-        else rows = await parseExcelFile(file);
-        const imported = mapRowsToProducts(rows);
-        if(!imported.length){ toast("取込めるデータが見つかりませんでした", true); return; }
-        this.showImportModal(imported);
-      }catch(err){
-        console.error(err);
-        toast("取込に失敗しました: " + err.message, true);
-      }
-      fileInput.value = "";
+      const targets = this.exportTargets();
+      if(!targets.length){ toast("該当する製品がありません", true); return; }
+      buildProductsXlsx(targets);
     });
 
     const masterFileInput = document.getElementById("master-file-import");
@@ -3316,22 +3295,29 @@ const ViewProducts = {
    ========================================================== */
 const ViewLineCodes = {
   filterText: "",
+  unlocked: false,   // 設定画面と同じパスワードで解除する編集ロック（2026-10-19。設定画面のロックとは別。開き直すとロック）
+
+  // 検索条件（ラインコード・ライン名）に合う行すべて
+  filteredList(){
+    const t = normalizeForSearch(this.filterText);
+    return Store.data.lineCodes.filter(lc=> !t || normalizeForSearch(lc.code+lc.name).includes(t));
+  },
+  // Excel の書き出し対象：その時の検索結果だけ
+  exportTargets(){ return this.filteredList(); },
 
   render(){
-    const list = Store.data.lineCodes.filter(lc=>{
-      if(!this.filterText) return true;
-      const t = normalizeForSearch(this.filterText);
-      return normalizeForSearch(lc.code+lc.name).includes(t);
-    });
+    const locked = !this.unlocked;
+    const dis = locked ? " disabled" : "";   // ロック中はキーボードでも編集できないように disabled にする
+    const list = this.filteredList();
 
     const rows = list.map(lc=>`
       <tr data-id="${lc.id}">
-        <td style="width:16%;"><input type="text" data-f="code" value="${escapeHtml(lc.code)}"></td>
-        <td><input type="text" data-f="name" value="${escapeHtml(lc.name)}"></td>
-        <td style="width:90px;"><input type="number" step="0.01" data-f="newIndex" value="${lc.newIndex}"></td>
-        <td style="width:140px;"><input type="number" data-f="minEnamel16" value="${lc.minEnamel16||""}" placeholder="―"></td>
-        <td style="width:140px;"><input type="number" data-f="minMetallic16" value="${lc.minMetallic16||""}" placeholder="―"></td>
-        <td class="col-actions"><button class="btn small danger" data-act="del">削除</button></td>
+        <td style="width:16%;"><input type="text" data-f="code" value="${escapeHtml(lc.code)}"${dis}></td>
+        <td><input type="text" data-f="name" value="${escapeHtml(lc.name)}"${dis}></td>
+        <td style="width:90px;"><input type="number" step="0.01" data-f="newIndex" value="${lc.newIndex}"${dis}></td>
+        <td style="width:140px;"><input type="number" data-f="minEnamel16" value="${lc.minEnamel16||""}" placeholder="―"${dis}></td>
+        <td style="width:140px;"><input type="number" data-f="minMetallic16" value="${lc.minMetallic16||""}" placeholder="―"${dis}></td>
+        <td class="col-actions"><button class="btn small danger" data-act="del"${dis}>削除</button></td>
       </tr>`).join("");
 
     return `
@@ -3341,34 +3327,46 @@ const ViewLineCodes = {
           <div class="sub">ラインコード（品番の先頭部分）ごとの推奨指数（新指数）と最低価格です。単価候補の第一候補選定に使われます（全 ${Store.data.lineCodes.length} 件）</div>
         </div>
         <div class="btn-row">
-          <button class="btn" id="btn-export-csv">CSVで書き出す</button>
-          <button class="btn" id="btn-export-xlsx">Excelで書き出す</button>
-          <button class="btn primary" id="btn-import">CSV / Excelから取込む</button>
+          <button class="btn" id="btn-export-xlsx" title="今の検索条件に合う行だけを Excel に書き出します">Excelで書き出す（検索結果のみ）</button>
         </div>
+      </div>
+
+      <div class="settings-lock-banner ${locked?"is-locked":"is-unlocked"}">
+        ${locked
+          ? `<span>🔒 内容の確認はできますが、変更にはパスワードが必要です</span><button class="btn small primary" id="btn-unlock-linecodes">ロックを解除して編集する</button>`
+          : `<span>🔓 編集可能な状態です</span><button class="btn small ghost" id="btn-relock-linecodes">ロックする</button>`
+        }
       </div>
 
       <div class="card card-pad" style="margin-bottom:16px;">
         <div class="product-toolbar">
           <input type="text" class="search-input" id="lc-search" placeholder="ラインコード・ライン名で検索" value="${escapeHtml(this.filterText)}">
-          <button class="btn small" id="btn-add-lc">＋ 1件追加</button>
+          <button class="btn small" id="btn-add-lc"${locked?" disabled":""}>＋ 1件追加</button>
         </div>
         <div class="format-help">
-          取込用ファイルの列見出し： <code>ラインコード</code>, <code>ライン名</code>, <code>新指数</code>, <code>最低価格エナメル16kg</code>, <code>最低価格メタリック16kg</code>（後者2つは省略可）。<br>
           品番の先頭がラインコードと一致する製品について、最も長く一致したラインコードの新指数を単価候補の第一候補（推奨）として提示します。4kgの最低価格は「設定」画面の共通値を使用します。
         </div>
       </div>
 
+      <div class="settings-lock-wrap${locked?" locked":""}">
       <div class="card">
         <table class="grid item-edit-table" style="font-size:13px;">
           <thead><tr><th>ラインコード</th><th>ライン名</th><th>新指数</th><th>最低価格(エナメル16kg)</th><th>最低価格(メタリック16kg)</th><th style="width:70px;">操作</th></tr></thead>
           <tbody>${rows || `<tr><td colspan="6" style="text-align:center;color:#888;padding:30px;">該当するデータがありません</td></tr>`}</tbody>
         </table>
       </div>
-      <input type="file" id="lc-file-import" accept=".csv,.xlsx,.xls" style="display:none;">
+      </div>
     `;
   },
 
   bind(){
+    const unlockBtn = document.getElementById("btn-unlock-linecodes");
+    if(unlockBtn) unlockBtn.addEventListener("click", ()=> promptEditUnlock("指数・最低価格の編集ロック解除", ()=>{
+      this.unlocked = true; App.render(); toast("指数・最低価格のロックを解除しました");
+    }));
+    const relockBtn = document.getElementById("btn-relock-linecodes");
+    if(relockBtn) relockBtn.addEventListener("click", ()=>{ this.unlocked = false; App.render(); toast("指数・最低価格をロックしました"); });
+
     document.getElementById("lc-search").addEventListener("input", (e)=>{
       this.filterText = e.target.value;
       App.render();
@@ -3376,35 +3374,17 @@ const ViewLineCodes = {
     });
 
     document.getElementById("btn-add-lc").addEventListener("click", ()=>{
+      if(!this.unlocked) return;
       Store.data.lineCodes.unshift({ id: uid(), code:"", name:"", newIndex:0.77, minEnamel16:null, minMetallic16:null });
       Store.save();
       App.render();
     });
 
-    document.getElementById("btn-export-csv").addEventListener("click", ()=>{
-      downloadFile("指数・最低価格リスト.csv", buildLineCodesCsv(Store.data.lineCodes), "text/csv;charset=utf-8");
-    });
+    // 「CSVで書き出す」「CSV / Excelから取込む」は廃止（2026-10-19）。Excel はその時の検索結果だけを書き出す（ロック中でも使える）
     document.getElementById("btn-export-xlsx").addEventListener("click", ()=>{
-      buildLineCodesXlsx(Store.data.lineCodes);
-    });
-
-    const fileInput = document.getElementById("lc-file-import");
-    document.getElementById("btn-import").addEventListener("click", ()=> fileInput.click());
-    fileInput.addEventListener("change", async ()=>{
-      const file = fileInput.files[0];
-      if(!file) return;
-      try{
-        let rows;
-        if(/\.csv$/i.test(file.name)) rows = parseCsv(await file.text());
-        else rows = await parseExcelFile(file);
-        const imported = mapRowsToLineCodes(rows);
-        if(!imported.length){ toast("取込めるデータが見つかりませんでした", true); return; }
-        this.showImportModal(imported);
-      }catch(err){
-        console.error(err);
-        toast("取込に失敗しました: " + err.message, true);
-      }
-      fileInput.value = "";
+      const targets = this.exportTargets();
+      if(!targets.length){ toast("該当するデータがありません", true); return; }
+      buildLineCodesXlsx(targets);
     });
 
     document.querySelectorAll("#view-root tbody tr[data-id]").forEach(tr=>{
@@ -3425,50 +3405,42 @@ const ViewLineCodes = {
         App.render();
       });
     });
-  },
-
-  showImportModal(imported){
-    const overlay = document.createElement("div");
-    overlay.className = "modal-overlay";
-    overlay.innerHTML = `
-      <div class="modal">
-        <div class="modal-head"><h2>指数・最低価格の取込み</h2><button class="modal-close">×</button></div>
-        <div class="modal-body">
-          <p>${imported.length} 件のデータを読み込みました。取込み方法を選択してください。</p>
-          <div class="tag-note">「ラインコード」が一致する行は新指数・最低価格を上書きします。一致しないラインコードは新規追加されます。</div>
-        </div>
-        <div class="modal-foot">
-          <button class="btn" id="im-cancel">キャンセル</button>
-          <button class="btn danger" id="im-replace">全て置き換える</button>
-          <button class="btn primary" id="im-merge">既存に反映（マージ）</button>
-        </div>
-      </div>`;
-    document.body.appendChild(overlay);
-    const close = ()=> overlay.remove();
-    overlay.querySelector(".modal-close").addEventListener("click", close);
-    overlay.querySelector("#im-cancel").addEventListener("click", close);
-    overlay.querySelector("#im-replace").addEventListener("click", ()=>{
-      Store.data.lineCodes = imported;
-      Store.save(); close(); App.render();
-      toast(`${imported.length} 件で置き換えました`);
-    });
-    overlay.querySelector("#im-merge").addEventListener("click", ()=>{
-      let added=0, updated=0;
-      for(const item of imported){
-        const existing = Store.data.lineCodes.find(lc=>lc.code.trim()===item.code.trim());
-        if(existing){
-          existing.name=item.name||existing.name;
-          existing.newIndex=item.newIndex;
-          existing.minEnamel16=item.minEnamel16;
-          existing.minMetallic16=item.minMetallic16;
-          updated++;
-        } else { Store.data.lineCodes.push(item); added++; }
-      }
-      Store.save(); close(); App.render();
-      toast(`反映しました（新規 ${added} 件 / 更新 ${updated} 件）`);
-    });
   }
 };
+
+/* 編集ロックの解除（パスワード入力画面）。設定画面と指数・最低価格で共通（パスワードは SETTINGS_EDIT_PASSWORD） */
+function promptEditUnlock(title, onSuccess){
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="modal-head"><h2>${escapeHtml(title)}</h2><button class="modal-close">×</button></div>
+      <div class="modal-body">
+        <div class="field">
+          <label>パスワード</label>
+          <input type="password" id="edit-unlock-pw" autocomplete="off">
+        </div>
+        <p class="hint" id="edit-unlock-error" style="color:#c0392b; min-height:1.2em;"></p>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" id="edit-unlock-cancel">キャンセル</button>
+        <button class="btn primary" id="edit-unlock-submit">解除</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = ()=> overlay.remove();
+  overlay.querySelector(".modal-close").addEventListener("click", close);
+  overlay.querySelector("#edit-unlock-cancel").addEventListener("click", close);
+  const pwInput = overlay.querySelector("#edit-unlock-pw");
+  const errorEl = overlay.querySelector("#edit-unlock-error");
+  const submit = ()=>{
+    if(pwInput.value === SETTINGS_EDIT_PASSWORD){ close(); onSuccess(); }
+    else { errorEl.textContent = "パスワードが正しくありません"; pwInput.value = ""; pwInput.focus(); }
+  };
+  overlay.querySelector("#edit-unlock-submit").addEventListener("click", submit);
+  pwInput.addEventListener("keydown", (e)=>{ if(e.key==="Enter") submit(); });
+  setTimeout(()=> pwInput.focus(), 0);
+}
 
 /* ==========================================================
    画面：設定（単価自動計算パラメータ・営業所）
@@ -3609,44 +3581,11 @@ const ViewSettings = {
   },
 
   promptUnlock(){
-    const overlay = document.createElement("div");
-    overlay.className = "modal-overlay";
-    overlay.innerHTML = `
-      <div class="modal">
-        <div class="modal-head"><h2>設定の編集ロック解除</h2><button class="modal-close">×</button></div>
-        <div class="modal-body">
-          <div class="field">
-            <label>パスワード</label>
-            <input type="password" id="settings-unlock-pw" autocomplete="off">
-          </div>
-          <p class="hint" id="settings-unlock-error" style="color:#c0392b; min-height:1.2em;"></p>
-        </div>
-        <div class="modal-foot">
-          <button class="btn" id="settings-unlock-cancel">キャンセル</button>
-          <button class="btn primary" id="settings-unlock-submit">解除</button>
-        </div>
-      </div>`;
-    document.body.appendChild(overlay);
-    const close = ()=> overlay.remove();
-    overlay.querySelector(".modal-close").addEventListener("click", close);
-    overlay.querySelector("#settings-unlock-cancel").addEventListener("click", close);
-    const pwInput = overlay.querySelector("#settings-unlock-pw");
-    const errorEl = overlay.querySelector("#settings-unlock-error");
-    const submit = ()=>{
-      if(pwInput.value === SETTINGS_EDIT_PASSWORD){
-        this.unlocked = true;
-        close();
-        App.render();
-        toast("設定のロックを解除しました");
-      } else {
-        errorEl.textContent = "パスワードが正しくありません";
-        pwInput.value = "";
-        pwInput.focus();
-      }
-    };
-    overlay.querySelector("#settings-unlock-submit").addEventListener("click", submit);
-    pwInput.addEventListener("keydown", (e)=>{ if(e.key==="Enter") submit(); });
-    setTimeout(()=> pwInput.focus(), 0);
+    promptEditUnlock("設定の編集ロック解除", ()=>{
+      this.unlocked = true;
+      App.render();
+      toast("設定のロックを解除しました");
+    });
   },
 
   bind(){

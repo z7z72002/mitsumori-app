@@ -11,7 +11,7 @@ function loadApp(products, lineCodes) {
   ctx.window = ctx;
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "js", "app.js"), "utf8") +
-    ";this.__t={Store,defaultData,ViewProducts,ViewLineCodes};", ctx);
+    ";this.__t={Store,defaultData,ViewProducts,ViewLineCodes,ViewSettings};", ctx);
   const t = ctx.__t;
   t.Store.data = t.defaultData();
   t.Store.data.products = products || [];
@@ -90,7 +90,25 @@ test("指数・最低価格：解除すると編集でき、「ロックする�
   assert.match(html, /id="btn-relock-linecodes"/);
   assert.doesNotMatch(html, /settings-lock-wrap locked/);
   assert.doesNotMatch(html, /id="btn-add-lc"[^>]*disabled/);
-  // 設定画面は別のロック
-  t.ViewLineCodes.unlocked = false;
-  assert.notEqual(t.ViewLineCodes, undefined);
+  assert.doesNotMatch(html, /<tbody>[\s\S]*disabled[\s\S]*<\/tbody>/);
+});
+
+test("指数・最低価格：ロック中は表の入力欄と削除ボタンもすべて押せない（キーボード操作も不可）", () => {
+  const t = loadApp([], LC());
+  const html = t.ViewLineCodes.render();
+  const body = html.match(/<tbody>([\s\S]*)<\/tbody>/)[1];
+  const inputs = body.match(/<input[^>]*>/g);
+  assert.equal(inputs.length, 15);
+  assert.ok(inputs.every(s => / disabled/.test(s)));
+  assert.equal((body.match(/data-act="del" disabled/g) || []).length, 3);
+});
+
+test("指数・最低価格と設定画面のロックは互いに影響しない", () => {
+  const t = loadApp([], LC());
+  t.ViewSettings.unlocked = false;
+  t.ViewLineCodes.unlocked = true;
+  assert.equal(t.ViewSettings.unlocked, false);
+  assert.match(t.ViewLineCodes.render(), /settings-lock-banner is-unlocked/);
+  t.ViewLineCodes.unlocked = false; t.ViewSettings.unlocked = true;
+  assert.match(t.ViewLineCodes.render(), /settings-lock-banner is-locked/);
 });

@@ -27,8 +27,8 @@ const P = (code, name, kg, client, sp) => ({ id: code + kg, code, name, specialK
 
 test("ライン名を品名の前に空白でつなげて付ける（一番長く一致したラインコード）", () => {
   const t = loadApp();
-  assert.equal(t.lineNamePrefixed("EC-GPX79-14908", "GOLD IT"), "ｴｺﾊｲｳﾚｯｸｽP ｸﾞﾗﾝﾃﾞﾎﾞｰﾙ GOLD IT");
-  assert.equal(t.lineNamePrefixed("EC-P79-36701", "2755C ﾈｲﾋﾞｰ"), "ｴｺﾊｲｳﾚｯｸｽP 2755C ﾈｲﾋﾞｰ");
+  assert.equal(t.lineNamePrefixed("EC-GPX79-14908", "GOLD IT"), "ｴｺﾊｲｳﾚｯｸｽP ｸﾞﾗﾝﾃﾞﾎﾞｰﾙ\nGOLD IT");
+  assert.equal(t.lineNamePrefixed("EC-P79-36701", "2755C ﾈｲﾋﾞｰ"), "ｴｺﾊｲｳﾚｯｸｽP\n2755C ﾈｲﾋﾞｰ");
 });
 
 test("品名がすでにライン名で始まっていれば二重に付けない（改行・全角半角の違いも同じとみなす）", () => {
@@ -53,13 +53,13 @@ test("applyLineNames は渡した品目の品名にライン名を付けた新�
   const t = loadApp();
   const src = [{ code: "EC-GPX79-14908", name: "GOLD IT", capacity: 16 }];
   const out = plain(t.applyLineNames(src));
-  assert.equal(out[0].name, "ｴｺﾊｲｳﾚｯｸｽP ｸﾞﾗﾝﾃﾞﾎﾞｰﾙ GOLD IT");
+  assert.equal(out[0].name, "ｴｺﾊｲｳﾚｯｸｽP ｸﾞﾗﾝﾃﾞﾎﾞｰﾙ\nGOLD IT");
   assert.equal(src[0].name, "GOLD IT");
 });
 
 test("ラインコードの表を引数で渡せる（見積スキル用）。アプリのデータが無くても例外にならない", () => {
   const t = loadApp();
-  assert.equal(t.lineNamePrefixed("ZZ-1-1", "A", [{ code: "ZZ-1-", name: "ﾃｽﾄﾗｲﾝ" }]), "ﾃｽﾄﾗｲﾝ A");
+  assert.equal(t.lineNamePrefixed("ZZ-1-1", "A", [{ code: "ZZ-1-", name: "ﾃｽﾄﾗｲﾝ" }]), "ﾃｽﾄﾗｲﾝ\nA");
   t.Store.data = null;
   assert.equal(t.lineNamePrefixed("EC-P79-1", "A"), "A");
 });
@@ -69,8 +69,8 @@ test("今ある見積書に同じ品番の行があれば、その行の品名�
   const q = { items: [{ code: "EC-GPX79-14908", name: "GOLD IT", capacity: 16 }] };
   assert.equal(t.itemNameForQuote(q, "EC-GPX79-14908", "GOLD IT"), "GOLD IT");
   assert.equal(t.itemNameForQuote(q, " EC-GPX79-14908 ", "GOLD IT"), "GOLD IT");
-  assert.equal(t.itemNameForQuote(q, "EC-P79-1", "NAVY"), "ｴｺﾊｲｳﾚｯｸｽP NAVY");
-  assert.equal(t.itemNameForQuote({ items: [] }, "EC-GPX79-14908", "GOLD IT"), "ｴｺﾊｲｳﾚｯｸｽP ｸﾞﾗﾝﾃﾞﾎﾞｰﾙ GOLD IT");
+  assert.equal(t.itemNameForQuote(q, "EC-P79-1", "NAVY"), "ｴｺﾊｲｳﾚｯｸｽP\nNAVY");
+  assert.equal(t.itemNameForQuote({ items: [] }, "EC-GPX79-14908", "GOLD IT"), "ｴｺﾊｲｳﾚｯｸｽP ｸﾞﾗﾝﾃﾞﾎﾞｰﾙ\nGOLD IT");
 });
 
 test("Excel：品名の行数を幅から見積もる（全角は2、半角は1として数え、改行も数える）", () => {
@@ -94,12 +94,12 @@ test("既存製品より選択（itemsFromProductRow）で作る品目に付く"
   const t = loadApp([P("EC-GPX79-14908", "GOLD IT", 16, "サンプル塗装株式会社", 40000), P("EC-GPX79-14908", "GOLD IT", 4, "サンプル塗装株式会社", 20000)]);
   const items = plain(t.itemsFromProductRow(t.Store.data.products[0]));
   assert.ok(items.length >= 2);
-  assert.ok(items.every(it => it.name === "ｴｺﾊｲｳﾚｯｸｽP ｸﾞﾗﾝﾃﾞﾎﾞｰﾙ GOLD IT"), JSON.stringify(items.map(i => i.name)));
+  assert.ok(items.every(it => it.name === "ｴｺﾊｲｳﾚｯｸｽP ｸﾞﾗﾝﾃﾞﾎﾞｰﾙ\nGOLD IT"), JSON.stringify(items.map(i => i.name)));
 });
 
 test("メールから作成（buildQuoteItemsFromMail）で作る品目に付く", () => {
   const t = loadApp([P("EC-GPX79-14908", "GOLD IT", 16, "サンプル塗装株式会社", 40000)]);
   const items = plain(t.buildQuoteItemsFromMail("EC-GPX79-14908", "GOLD IT", "サンプル塗装株式会社", [16], false));
   assert.ok(items.length >= 1);
-  assert.ok(items.every(it => it.name === "ｴｺﾊｲｳﾚｯｸｽP ｸﾞﾗﾝﾃﾞﾎﾞｰﾙ GOLD IT"), JSON.stringify(items.map(i => i.name)));
+  assert.ok(items.every(it => it.name === "ｴｺﾊｲｳﾚｯｸｽP ｸﾞﾗﾝﾃﾞﾎﾞｰﾙ\nGOLD IT"), JSON.stringify(items.map(i => i.name)));
 });

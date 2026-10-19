@@ -2580,7 +2580,7 @@ const ViewQuotes = {
           <div class="sub">
             ${this.showTrash
               ? `削除した見積書です。削除から${TRASH_RETENTION_DAYS}日が経過すると自動的に完全削除されます（アプリを開いたときに判定されます）。`
-              : `作成した見積書はこのブラウザ内に保存されます（全 ${quotes.length} 件）`}
+              : `作成した見積書はこのブラウザ内に保存されます（全 ${all.length - trashCount} 件）`}
           </div>
           ${(!this.showTrash && FS_ACCESS_SUPPORTED) ? `
           <div class="sub" style="margin-top:2px;">

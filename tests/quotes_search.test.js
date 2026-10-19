@@ -79,6 +79,12 @@ test("一覧：検索語に合う見積書だけを出し、件数と「一致�
   assert.match(html, /一致：EC-SW62-90002/);
 });
 
+test("一覧：見出しの「全○件」は、検索で絞り込んでも見積書の総数のまま", () => {
+  const t = loadApp([Q("q1"), Q("q2", { customerCompany: "テスト工業株式会社" }), Q("q3", { customerCompany: "見本化成株式会社" })]);
+  t.ViewQuotes.filterText = "テスト工業";
+  assert.match(t.ViewQuotes.render(), /全 3 件/);
+});
+
 test("一覧：検索語が無い時は全件で、件数の表示は出さない", () => {
   const t = loadApp([Q("q1"), Q("q2")]);
   const html = t.ViewQuotes.render();

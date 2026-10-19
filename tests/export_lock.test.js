@@ -37,6 +37,12 @@ test("特価/原価管理リスト：CSVで書き出す・CSV/Excelから取込�
   assert.doesNotMatch(html, /CSV \/ Excel ファイルの取込み/);
 });
 
+test("特価/原価管理リスト：検索欄（品番・品名、取引先）は左に並べる。指数・最低価格は今のまま", () => {
+  const t = loadApp(DATA(), LC());
+  assert.match(t.ViewProducts.render(), /<div class="product-toolbar align-left">\s*<input[^>]*id="product-search-code"[^>]*>\s*<input[^>]*id="product-search-client"/);
+  assert.doesNotMatch(t.ViewLineCodes.render(), /align-left/);
+});
+
 test("特価/原価管理リスト：Excelの書き出し対象は、品番・品名、取引先、Kg の検索結果すべて", () => {
   const t = loadApp(DATA());
   t.ViewProducts.filterCode = "A-1";

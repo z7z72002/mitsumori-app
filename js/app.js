@@ -2927,7 +2927,7 @@ const ViewProducts = {
       </div>
 
       <div class="card card-pad" style="margin-bottom:16px;">
-        <div class="product-toolbar">
+        <div class="product-toolbar align-left">
           <input type="text" class="search-input" id="product-search-code" placeholder="品番・品名でワード検索" value="${escapeHtml(this.filterCode)}">
           <input type="text" class="search-input" id="product-search-client" list="product-client-datalist" autocomplete="off" placeholder="取引先（会社名）でワード検索" value="${escapeHtml(this.filterClient)}">
           <datalist id="product-client-datalist">${clientDatalistHtml}</datalist>

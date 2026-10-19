@@ -340,6 +340,7 @@ table.grid tbody tr:hover{ background:#fafbfc; }
 .item-edit-table select.kg-filter:hover{ background:#f7f8fa; }
 .item-edit-table select.kg-filter:focus{ border-color:var(--color-primary); }
 .product-toolbar{ display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; flex-wrap:wrap; gap:10px; }
+.product-toolbar.align-left{ justify-content:flex-start; }   /* 特価/原価管理リスト：検索欄を左に並べる（2026-10-19） */
 .file-drop{ border:2px dashed var(--color-border-strong); border-radius:var(--radius); padding:26px; text-align:center; color:var(--color-text-sub); font-size:13px; }
 .file-drop.drag{ border-color:var(--color-primary); background:var(--color-primary-tint); color:var(--color-primary-dark); }
 .format-help{ background:#f8f9fb; border:1px solid var(--color-border); border-radius:var(--radius-sm); padding:12px 14px; font-size:12.3px; color:#4a5361; margin-top:12px; }

@@ -2510,8 +2510,10 @@ function quoteSearchMatch(q, term){
   if(items[0] && has(itemText(items[0]))) return { match:true, hitCode:"" };
   const other = items.slice(1).find(it=> has(itemText(it)));
   if(other) return { match:true, hitCode: String(other.code||"").replace(/\n/g," ").trim() };
+  // 運賃の注記は配列が普通だが、古いデータで文字列などの場合もあるので、配列でなければそのまま1件として扱う
+  const freight = Array.isArray(q.freightNotes) ? q.freightNotes : (typeof q.freightNotes === "string" ? [q.freightNotes] : []);
   const rest = [q.number, q.customerCompany, q.customerPerson, q.theme, q.deliveryDate, q.deliveryPlace, q.tradeTerms, q.validPeriod,
-    q.remarks, q.toning, q.trialSheetNote, ...(q.freightNotes||[])].join(" ");
+    q.remarks, q.toning, q.trialSheetNote, ...freight].map(v=> v==null ? "" : String(v)).join(" ");
   return { match: has(rest), hitCode:"" };
 }
 
@@ -2627,6 +2629,7 @@ const ViewQuotes = {
         clearTimeout(this._searchTimer);
         this._searchTimer = setTimeout(()=>{
           this.filterText = value;
+          if(App.view !== "quotes") return;   // 入力直後に別の画面へ移った時は、その画面を描き直さない
           App.render();
           setTimeout(()=>{ const el=document.getElementById("quote-search"); if(el){ el.focus(); el.selectionStart=el.selectionEnd=el.value.length; } },0);
         }, 250);
@@ -2634,6 +2637,7 @@ const ViewQuotes = {
       searchInput.addEventListener("compositionstart", ()=>{ composing = true; });
       searchInput.addEventListener("compositionend", (e)=>{ composing = false; schedule(e.target.value); });
       searchInput.addEventListener("input", (e)=>{ if(composing) return; schedule(e.target.value); });
+      searchInput.addEventListener("change", (e)=>{ composing = false; schedule(e.target.value); });   // 変換を確定せずに欄を離れた時も絞り込む
     }
 
     const newBtn = document.getElementById("btn-new-quote");

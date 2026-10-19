@@ -51,6 +51,16 @@ test("品名・備考・宛先・担当者・見積番号・テーマ・摘要�
   }
 });
 
+test("古いデータ（運賃の注記が配列でない・項目が空）でも例外にならず、文字列の注記で一致する", () => {
+  const t = loadApp();
+  const q1 = Q("q1", { freightNotes: "御取引先様店頭渡し", remarks: null, theme: undefined, number: null });
+  assert.equal(t.quoteSearchMatch(q1, "店頭渡し").match, true);
+  const q2 = Q("q2", { freightNotes: { a: 1 } });
+  assert.equal(t.quoteSearchMatch(q2, "XYZ").match, false);
+  const q3 = Q("q3", { items: undefined });
+  assert.equal(t.quoteSearchMatch(q3, "サンプル塗装").match, true);
+});
+
 test("全角・半角、大文字・小文字の違いを区別しない", () => {
   const t = loadApp();
   assert.equal(t.quoteSearchMatch(Q("q1"), "ｇｐｘ７９").match, true);

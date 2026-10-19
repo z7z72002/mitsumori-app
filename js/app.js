@@ -2499,8 +2499,27 @@ const MailImport = {
 /* ==========================================================
    画面：見積書一覧
    ========================================================== */
+// 見積書一覧のワード検索（2026-10-19）：見積書の中身すべて（全品目の品番・品名・備考、宛先、見積番号、テーマ、受渡し条件、摘要・注記）から探す。
+// 戻り値 { match, hitCode }。hitCode は「1つ目の品目では合わず、2つ目以降の品目で合った」時のその品番（一覧に「一致：」と出す）
+function quoteSearchMatch(q, term){
+  const t = normalizeForSearch(String(term||"").trim());
+  if(!t) return { match:true, hitCode:"" };
+  const has = v => normalizeForSearch(v).includes(t);
+  const items = q.items || [];
+  const itemText = it => [it.code, it.name, it.note].join(" ");
+  if(items[0] && has(itemText(items[0]))) return { match:true, hitCode:"" };
+  const other = items.slice(1).find(it=> has(itemText(it)));
+  if(other) return { match:true, hitCode: String(other.code||"").replace(/\n/g," ").trim() };
+  // 運賃の注記は配列が普通だが、古いデータで文字列などの場合もあるので、配列でなければそのまま1件として扱う
+  const freight = Array.isArray(q.freightNotes) ? q.freightNotes : (typeof q.freightNotes === "string" ? [q.freightNotes] : []);
+  const rest = [q.number, q.customerCompany, q.customerPerson, q.theme, q.deliveryDate, q.deliveryPlace, q.tradeTerms, q.validPeriod,
+    q.remarks, q.toning, q.trialSheetNote, ...freight].map(v=> v==null ? "" : String(v)).join(" ");
+  return { match: has(rest), hitCode:"" };
+}
+
 const ViewQuotes = {
   showTrash: false,
+  filterText: "",
 
   selectedIds: new Set(),
   folderHandle: null,
@@ -2510,7 +2529,10 @@ const ViewQuotes = {
   render(){
     const all = Store.data.quotes;
     const trashCount = all.filter(q=>q.deletedAt).length;
+    const hits = new Map();   // 検索で2つ目以降の品目が合った見積書 → その品番
+    const searching = !!String(this.filterText||"").trim();
     const quotes = all.filter(q=> this.showTrash ? !!q.deletedAt : !q.deletedAt)
+      .filter(q=>{ const m = quoteSearchMatch(q, this.filterText); if(m.hitCode) hits.set(q.id, m.hitCode); return m.match; })
       .slice().sort((a,b)=> (b.updatedAt||"").localeCompare(a.updatedAt||""));
 
     const visibleIds = new Set(quotes.map(q=>q.id));
@@ -2541,7 +2563,7 @@ const ViewQuotes = {
       return `
         <tr data-id="${q.id}">
           ${checkboxCell}
-          <td>${escapeHtml(firstCode||"(品番未設定)")}</td>
+          <td>${escapeHtml(firstCode||"(品番未設定)")}${hits.has(q.id)?`<div class="hint quote-hit">一致：${escapeHtml(hits.get(q.id))}</div>`:""}</td>
           <td>${escapeHtml(q.customerCompany||"(宛先未設定)")}${q.customerPerson? "　"+escapeHtml(q.customerPerson)+"様":""}</td>
           <td>${formatDateJp(q.date)}</td>
           <td>${q.items.length}件</td>
@@ -2560,7 +2582,7 @@ const ViewQuotes = {
           <div class="sub">
             ${this.showTrash
               ? `削除した見積書です。削除から${TRASH_RETENTION_DAYS}日が経過すると自動的に完全削除されます（アプリを開いたときに判定されます）。`
-              : `作成した見積書はこのブラウザ内に保存されます（全 ${quotes.length} 件）`}
+              : `作成した見積書はこのブラウザ内に保存されます（全 ${all.length - trashCount} 件）`}
           </div>
           ${(!this.showTrash && FS_ACCESS_SUPPORTED) ? `
           <div class="sub" style="margin-top:2px;">
@@ -2579,6 +2601,12 @@ const ViewQuotes = {
                <button class="btn primary" id="btn-mail-quote" title="Outlookのメールをこのボタン（または一覧の画面）にドラッグするか、クリックして読み込みます">📧 メールから作成</button>`}
         </div>
       </div>
+      <div class="card card-pad" style="margin-bottom:16px;">
+        <div class="product-toolbar align-left" style="margin-bottom:0;">
+          <input type="text" class="search-input" id="quote-search" placeholder="品番・品名でワード検索" value="${escapeHtml(this.filterText)}" title="品番・品名だけでなく、宛先・備考・摘要など見積書の中身すべてから探します">
+          ${searching ? `<span class="hint" style="margin:0;">検索結果 ${quotes.length}件（見積書の中身すべてから検索）</span>` : ""}
+        </div>
+      </div>
       <div class="card">
         ${quotes.length ? `
         <table class="grid">
@@ -2587,12 +2615,31 @@ const ViewQuotes = {
         </table>` : `
         <div class="empty-state">
           <div class="big">${this.showTrash?"🗑":"📄"}</div>
-          ${this.showTrash ? "ゴミ箱は空です。" : "見積書がまだありません。「新規見積書を作成」から始めましょう。"}
+          ${searching ? "検索語に合う見積書はありません。" : this.showTrash ? "ゴミ箱は空です。" : "見積書がまだありません。「新規見積書を作成」から始めましょう。"}
         </div>`}
       </div>`;
   },
 
   bind(){
+    // ワード検索（日本語の変換中は絞り込まず、確定してから絞り込む）
+    const searchInput = document.getElementById("quote-search");
+    if(searchInput){
+      let composing = false;
+      const schedule = (value)=>{
+        clearTimeout(this._searchTimer);
+        this._searchTimer = setTimeout(()=>{
+          this.filterText = value;
+          if(App.view !== "quotes") return;   // 入力直後に別の画面へ移った時は、その画面を描き直さない
+          App.render();
+          setTimeout(()=>{ const el=document.getElementById("quote-search"); if(el){ el.focus(); el.selectionStart=el.selectionEnd=el.value.length; } },0);
+        }, 250);
+      };
+      searchInput.addEventListener("compositionstart", ()=>{ composing = true; });
+      searchInput.addEventListener("compositionend", (e)=>{ composing = false; schedule(e.target.value); });
+      searchInput.addEventListener("input", (e)=>{ if(composing) return; schedule(e.target.value); });
+      searchInput.addEventListener("change", (e)=>{ composing = false; schedule(e.target.value); });   // 変換を確定せずに欄を離れた時も絞り込む
+    }
+
     const newBtn = document.getElementById("btn-new-quote");
     if(newBtn) newBtn.addEventListener("click", ()=>{
       const q = {

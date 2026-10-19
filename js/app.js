@@ -682,7 +682,7 @@ function lineNamePrefixed(code, name, lineCodes){
   if(!ln) return nm;
   const squash = s => normalizeForSearch(s).replace(/\s+/g, "");
   if(squash(nm).startsWith(squash(ln))) return nm;
-  return nm.trim() ? `${ln} ${nm}` : ln;
+  return nm.trim() ? `${ln}\n${nm}` : ln;   // 1行目にライン名、2行目に品名（2026-10-19 平井さんの指示）
 }
 // 今ある見積書に品目を足す時の品名：同じ品番の行があればその品名に合わせる（ライン名の有無で表記がずれず、見積書で1つにまとまるように）
 function itemNameForQuote(q, code, name){

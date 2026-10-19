@@ -673,14 +673,22 @@ function matchLineCode(productCode, lineCodes){
 }
 // 品名の前にライン名（指数・最低価格のライン名。例 EC-GPX79-14908 → 「ｴｺﾊｲｳﾚｯｸｽP ｸﾞﾗﾝﾃﾞﾎﾞｰﾙ GOLD IT」）を付ける（2026-10-19 平井さんの指示）。
 // 品目を新しく作る時だけ使う（今ある見積書の品目は変えない）。すでにライン名で始まる品名（改行・全角半角の違いは無視）には付けない
-function lineNamePrefixed(code, name){
+// lineCodes を省くとアプリのラインコード（指数・最低価格）を使う。見積スキル（quote_tool.js）は既定のラインコードを渡す
+function lineNamePrefixed(code, name, lineCodes){
   const nm = String(name||"");
-  const lm = code ? matchLineCode(code, Store.data.lineCodes) : null;
+  const lcs = lineCodes || (Store.data && Store.data.lineCodes) || [];
+  const lm = code ? matchLineCode(code, lcs) : null;
   const ln = lm && String(lm.name||"").trim();
   if(!ln) return nm;
   const squash = s => normalizeForSearch(s).replace(/\s+/g, "");
   if(squash(nm).startsWith(squash(ln))) return nm;
   return nm.trim() ? `${ln} ${nm}` : ln;
+}
+// 今ある見積書に品目を足す時の品名：同じ品番の行があればその品名に合わせる（ライン名の有無で表記がずれず、見積書で1つにまとまるように）
+function itemNameForQuote(q, code, name){
+  const c = String(code||"").trim();
+  const same = (q && q.items || []).find(x=> x && String(x.code||"").trim() === c);
+  return same ? same.name : lineNamePrefixed(code, name);
 }
 function applyLineNames(items){
   return (items||[]).map(it=> it ? Object.assign({}, it, { name: lineNamePrefixed(it.code, it.name) }) : it);
@@ -4006,6 +4014,21 @@ function xlBox(ws, r1, c1, r2, c2, outer, inner){
 function xlMerge(ws, r1, c1, r2, c2){ if(r1 !== r2 || c1 !== c2) ws.mergeCells(r1, c1, r2, c2); }
 function xlImage(wb, dataUrl){ return wb.addImage({ base64: dataUrl.replace(/^data:image\/png;base64,/, ""), extension: "png" }); }
 
+// Excel のセルで文字が何行になるかの見積もり（全角は幅2、半角英数・半角カナは幅1。改行でも行が増える）
+function xlTextLines(text, colWidth){
+  const w = Math.max(1, Number(colWidth) || 1);
+  return String(text||"").split(/\r?\n/).reduce((sum, line)=>{
+    let width = 0;
+    for(const ch of line){ const c = ch.codePointAt(0); width += (c <= 0x7E || (c >= 0xFF61 && c <= 0xFF9F)) ? 1 : 2; }
+    return sum + Math.max(1, Math.ceil(width / w));
+  }, 0) || 1;
+}
+// 品名を縦に結合した span 行の、1行あたりの高さ（品名が収まる高さ。baseHeight を下回らない）
+function xlItemRowHeight(name, span, colWidth, baseHeight){
+  const need = xlTextLines(name, colWidth) * 15 + 5;
+  return Math.max(baseHeight, Math.ceil(need / Math.max(1, span)));
+}
+
 function addQuoteWorksheet(wb, quote, settings){
   const ws = wb.addWorksheet("見積書", {
     views: [{ showGridLines: false }],
@@ -4068,12 +4091,13 @@ function addQuoteWorksheet(wb, quote, settings){
     const it = items[i];
     let span = 1;
     while(i + span < items.length && items[i + span].code === it.code && items[i + span].name === it.name) span++;
+    const rowHeight = xlItemRowHeight(it.name, span, 30, 20);   // 長い品名（ライン名付きなど）が欠けないよう、行を高くする
     for(let k = 0; k < span; k++){
       const row = items[i + k];
       xlCell(ws, r + k, 3, `${row.capacity} ${row.unit || "Kg"}`, { h: "center" });
       xlCell(ws, r + k, 4, Number(row.unitPrice) || 0, { h: "right", numFmt: XL_YEN });
       xlCell(ws, r + k, 5, row.note || "", { h: "center", size: 10 });
-      ws.getRow(r + k).height = 20;
+      ws.getRow(r + k).height = rowHeight;
     }
     xlMerge(ws, r, 1, r + span - 1, 1);
     xlMerge(ws, r, 2, r + span - 1, 2);
@@ -4132,9 +4156,10 @@ function addTrialWorksheet(wb, quote, settings){
   let r = headRow + 1;
   groups.forEach(g=>{
     const total = g.rows.length;
+    const rowHeight = xlItemRowHeight(g.name, total, 22, 18);   // 長い品名（ライン名付きなど）が欠けないよう、行を高くする
     g.rows.forEach((row, i)=>{
       const rowNo = r + i;
-      ws.getRow(rowNo).height = 18;
+      ws.getRow(rowNo).height = rowHeight;
       if(i === 0 || i === g.capsCountPerType){
         xlMerge(ws, rowNo, COL.costType, rowNo + g.capsCountPerType - 1, COL.costType);
         xlCell(ws, rowNo, COL.costType, row.costType, { h: "center", size: 9.5 });
@@ -4843,7 +4868,7 @@ const ViewEditor = {
           || !!findSpecialPriceEntry(p.code, p.client, s.bigContainerKg);
 
         const unit = unitForName(p.name);
-        const nm = lineNamePrefixed(p.code, p.name);   // 品名の前にライン名を付ける（ここで作る品目すべて）
+        const nm = itemNameForQuote(q, p.code, p.name);   // 品名の前にライン名を付ける（同じ品番の行があればその品名に合わせる）
         if(isHardener(p)){
           const cap = Number(p.specialKg) || 4;
           const hasOwnPrice = hasRecordedPrice(p.specialPrice);

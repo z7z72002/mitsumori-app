@@ -11,7 +11,7 @@ function loadApp(products) {
   ctx.window = ctx;
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "js", "app.js"), "utf8") +
-    ";this.__t={Store,defaultData,lineNamePrefixed,applyLineNames,itemsFromProductRow,buildQuoteItemsFromMail};", ctx);
+    ";this.__t={Store,defaultData,lineNamePrefixed,applyLineNames,itemNameForQuote,xlTextLines,xlItemRowHeight,itemsFromProductRow,buildQuoteItemsFromMail};", ctx);
   const t = ctx.__t;
   t.Store.data = t.defaultData();
   t.Store.data.lineCodes = [
@@ -55,6 +55,39 @@ test("applyLineNames は渡した品目の品名にライン名を付けた新�
   const out = plain(t.applyLineNames(src));
   assert.equal(out[0].name, "ｴｺﾊｲｳﾚｯｸｽP ｸﾞﾗﾝﾃﾞﾎﾞｰﾙ GOLD IT");
   assert.equal(src[0].name, "GOLD IT");
+});
+
+test("ラインコードの表を引数で渡せる（見積スキル用）。アプリのデータが無くても例外にならない", () => {
+  const t = loadApp();
+  assert.equal(t.lineNamePrefixed("ZZ-1-1", "A", [{ code: "ZZ-1-", name: "ﾃｽﾄﾗｲﾝ" }]), "ﾃｽﾄﾗｲﾝ A");
+  t.Store.data = null;
+  assert.equal(t.lineNamePrefixed("EC-P79-1", "A"), "A");
+});
+
+test("今ある見積書に同じ品番の行があれば、その行の品名に合わせる（表記をそろえ、見積書で1つにまとまるように）", () => {
+  const t = loadApp();
+  const q = { items: [{ code: "EC-GPX79-14908", name: "GOLD IT", capacity: 16 }] };
+  assert.equal(t.itemNameForQuote(q, "EC-GPX79-14908", "GOLD IT"), "GOLD IT");
+  assert.equal(t.itemNameForQuote(q, " EC-GPX79-14908 ", "GOLD IT"), "GOLD IT");
+  assert.equal(t.itemNameForQuote(q, "EC-P79-1", "NAVY"), "ｴｺﾊｲｳﾚｯｸｽP NAVY");
+  assert.equal(t.itemNameForQuote({ items: [] }, "EC-GPX79-14908", "GOLD IT"), "ｴｺﾊｲｳﾚｯｸｽP ｸﾞﾗﾝﾃﾞﾎﾞｰﾙ GOLD IT");
+});
+
+test("Excel：品名の行数を幅から見積もる（全角は2、半角は1として数え、改行も数える）", () => {
+  const t = loadApp();
+  assert.equal(t.xlTextLines("GOLD IT", 30), 1);
+  assert.equal(t.xlTextLines("ｴｺﾊｲｳﾚｯｸｽP ｸﾞﾗﾝﾃﾞﾎﾞﾇｰﾙ TR-1989 WKC-509 ﾗｲﾄﾌﾞﾗｳﾝﾒﾀﾘｯｸ NO.2", 30), 2);
+  assert.equal(t.xlTextLines("あいうえおかきくけこさしすせそたちつてと", 30), 2);   // 全角20文字＝幅40
+  assert.equal(t.xlTextLines("ｴｺﾊｲｳﾚｯｸｽP\n2755C ﾈｲﾋﾞｰ", 30), 2);
+  assert.equal(t.xlTextLines("", 30), 1);
+});
+
+test("Excel：品名が収まるよう、結合した行の高さを広げる（1行の高さ20を下回らない）", () => {
+  const t = loadApp();
+  assert.equal(t.xlItemRowHeight("GOLD IT", 2, 30, 20), 20);
+  const h1 = t.xlItemRowHeight("ｴｺﾊｲｳﾚｯｸｽP ｸﾞﾗﾝﾃﾞﾎﾞﾇｰﾙ TR-1989 WKC-509 ﾗｲﾄﾌﾞﾗｳﾝﾒﾀﾘｯｸ NO.2", 1, 30, 20);
+  assert.ok(h1 >= 30, String(h1));   // 2行分（1容量だけの行でも2行目が見える）
+  assert.equal(t.xlItemRowHeight("ｴｺﾊｲｳﾚｯｸｽP ｸﾞﾗﾝﾃﾞﾎﾞﾇｰﾙ TR-1989 WKC-509 ﾗｲﾄﾌﾞﾗｳﾝﾒﾀﾘｯｸ NO.2", 2, 30, 20), 20);   // 2行あれば足りる
 });
 
 test("既存製品より選択（itemsFromProductRow）で作る品目に付く", () => {

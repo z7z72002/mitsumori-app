@@ -671,6 +671,28 @@ function matchLineCode(productCode, lineCodes){
   }
   return best;
 }
+// 品名の前にライン名（指数・最低価格のライン名。例 EC-GPX79-14908 → 「ｴｺﾊｲｳﾚｯｸｽP ｸﾞﾗﾝﾃﾞﾎﾞｰﾙ GOLD IT」）を付ける（2026-10-19 平井さんの指示）。
+// 品目を新しく作る時だけ使う（今ある見積書の品目は変えない）。すでにライン名で始まる品名（改行・全角半角の違いは無視）には付けない
+// lineCodes を省くとアプリのラインコード（指数・最低価格）を使う。見積スキル（quote_tool.js）は既定のラインコードを渡す
+function lineNamePrefixed(code, name, lineCodes){
+  const nm = String(name||"");
+  const lcs = lineCodes || (Store.data && Store.data.lineCodes) || [];
+  const lm = code ? matchLineCode(code, lcs) : null;
+  const ln = lm && String(lm.name||"").trim();
+  if(!ln) return nm;
+  const squash = s => normalizeForSearch(s).replace(/\s+/g, "");
+  if(squash(nm).startsWith(squash(ln))) return nm;
+  return nm.trim() ? `${ln} ${nm}` : ln;
+}
+// 今ある見積書に品目を足す時の品名：同じ品番の行があればその品名に合わせる（ライン名の有無で表記がずれず、見積書で1つにまとまるように）
+function itemNameForQuote(q, code, name){
+  const c = String(code||"").trim();
+  const same = (q && q.items || []).find(x=> x && String(x.code||"").trim() === c);
+  return same ? same.name : lineNamePrefixed(code, name);
+}
+function applyLineNames(items){
+  return (items||[]).map(it=> it ? Object.assign({}, it, { name: lineNamePrefixed(it.code, it.name) }) : it);
+}
 // 単価欄の下に出す価格候補（自動作成の見積書・硬化剤/シンナーの他支店価格など）を、1つのプルダウンにまとめる。
 // 「原価820.07円/kg×指数0.62」のように共通する原価の部分は見出しに1回だけ出し、各候補は「指数0.62：¥42,660」と短くする。
 function candidateSelectHtml(cands){
@@ -2236,8 +2258,9 @@ function buildQuoteItemsFromMail(code, name, client, kgs, un){
   const all = cost > 0 ? calcPriceCandidates(cost, s, lineMatch ? lineMatch.newIndex : null) : null;
   const baseSpecial = findSpecialPriceEntry(code, client, s.baseContainerKg);
   const bigSpecial = client ? findSpecialPriceEntry(code, client, s.bigContainerKg) : null;
+  const itemName = lineNamePrefixed(code, name || (product && product.name) || "");   // 品名の前にライン名を付ける
   return kgs.slice().sort((a, b)=> b - a).map(kg=>{
-    const item = { code, name: name || (product && product.name) || "", capacity: kg, unit, unitPrice: 0, note };
+    const item = { code, name: itemName, capacity: kg, unit, unitPrice: 0, note };
     const sp = client ? findSpecialPriceEntry(code, client, kg) : null;
     if(sp){
       item.unitPrice = Number(sp.specialPrice);
@@ -2868,7 +2891,7 @@ function itemsFromProductRow(p){
   [[baseItem,s.baseContainerKg],[smallItem,s.smallContainerKg],[bigItem,s.bigContainerKg]].forEach(([it,cap])=> addConditionalCandidatesToItem(it, p, cap));
   const items = [ baseItem, smallItem ];
   if(bigItem) items.push(bigItem);
-  return items;
+  return applyLineNames(items);   // 品名の前にライン名を付ける
 }
 
 /* ==========================================================
@@ -3177,7 +3200,7 @@ const ViewProducts = {
             id: uid(), number: "", date: toDateInputValue(new Date()),
             customerCompany: "", customerPerson: "", officeIndex: 0, theme: "",
             deliveryDate: "従来通り", deliveryPlace: "従来通り", tradeTerms: "従来通り", validPeriod: "発行後6カ月間",
-            items,
+            items: applyLineNames(items),   // 品名の前にライン名を付ける
             remarks: DEFAULT_REMARKS, toning: DEFAULT_TONING, toningEnabled: true, trialSheetNote: "", freightNotes: DEFAULT_FREIGHT.slice(),
             seals: [null,null,null], deletedAt: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
           };
@@ -3991,6 +4014,21 @@ function xlBox(ws, r1, c1, r2, c2, outer, inner){
 function xlMerge(ws, r1, c1, r2, c2){ if(r1 !== r2 || c1 !== c2) ws.mergeCells(r1, c1, r2, c2); }
 function xlImage(wb, dataUrl){ return wb.addImage({ base64: dataUrl.replace(/^data:image\/png;base64,/, ""), extension: "png" }); }
 
+// Excel のセルで文字が何行になるかの見積もり（全角は幅2、半角英数・半角カナは幅1。改行でも行が増える）
+function xlTextLines(text, colWidth){
+  const w = Math.max(1, Number(colWidth) || 1);
+  return String(text||"").split(/\r?\n/).reduce((sum, line)=>{
+    let width = 0;
+    for(const ch of line){ const c = ch.codePointAt(0); width += (c <= 0x7E || (c >= 0xFF61 && c <= 0xFF9F)) ? 1 : 2; }
+    return sum + Math.max(1, Math.ceil(width / w));
+  }, 0) || 1;
+}
+// 品名を縦に結合した span 行の、1行あたりの高さ（品名が収まる高さ。baseHeight を下回らない）
+function xlItemRowHeight(name, span, colWidth, baseHeight){
+  const need = xlTextLines(name, colWidth) * 15 + 5;
+  return Math.max(baseHeight, Math.ceil(need / Math.max(1, span)));
+}
+
 function addQuoteWorksheet(wb, quote, settings){
   const ws = wb.addWorksheet("見積書", {
     views: [{ showGridLines: false }],
@@ -4053,12 +4091,13 @@ function addQuoteWorksheet(wb, quote, settings){
     const it = items[i];
     let span = 1;
     while(i + span < items.length && items[i + span].code === it.code && items[i + span].name === it.name) span++;
+    const rowHeight = xlItemRowHeight(it.name, span, 30, 20);   // 長い品名（ライン名付きなど）が欠けないよう、行を高くする
     for(let k = 0; k < span; k++){
       const row = items[i + k];
       xlCell(ws, r + k, 3, `${row.capacity} ${row.unit || "Kg"}`, { h: "center" });
       xlCell(ws, r + k, 4, Number(row.unitPrice) || 0, { h: "right", numFmt: XL_YEN });
       xlCell(ws, r + k, 5, row.note || "", { h: "center", size: 10 });
-      ws.getRow(r + k).height = 20;
+      ws.getRow(r + k).height = rowHeight;
     }
     xlMerge(ws, r, 1, r + span - 1, 1);
     xlMerge(ws, r, 2, r + span - 1, 2);
@@ -4117,9 +4156,10 @@ function addTrialWorksheet(wb, quote, settings){
   let r = headRow + 1;
   groups.forEach(g=>{
     const total = g.rows.length;
+    const rowHeight = xlItemRowHeight(g.name, total, 22, 18);   // 長い品名（ライン名付きなど）が欠けないよう、行を高くする
     g.rows.forEach((row, i)=>{
       const rowNo = r + i;
-      ws.getRow(rowNo).height = 18;
+      ws.getRow(rowNo).height = rowHeight;
       if(i === 0 || i === g.capsCountPerType){
         xlMerge(ws, rowNo, COL.costType, rowNo + g.capsCountPerType - 1, COL.costType);
         xlCell(ws, rowNo, COL.costType, row.costType, { h: "center", size: 9.5 });
@@ -4593,6 +4633,18 @@ const ViewEditor = {
           }
         });
       });
+      // 新規作成（手入力）の行：品番を入れ終えた時（欄を離れた時）に品名が空なら、ライン名を品名に入れる（2026-10-19）
+      const codeInput = tr.querySelector('[data-f="code"]');
+      if(codeInput) codeInput.addEventListener("change", ()=>{
+        const it = q.items[i];
+        if(!it || String(it.name||"").trim()) return;
+        const nm = lineNamePrefixed(it.code, "");
+        if(!nm) return;
+        it.name = nm;
+        const nameInput = tr.querySelector('[data-f="name"]');
+        if(nameInput) nameInput.value = nm;
+        this.touch(q); this.updatePreview();
+      });
       const priceInput = tr.querySelector('input[data-f="unitPrice"]');
       let priceAtFocus = null;
       if(priceInput) priceInput.addEventListener("focus", ()=>{ priceAtFocus = q.items[i].unitPrice; });
@@ -4816,17 +4868,18 @@ const ViewEditor = {
           || !!findSpecialPriceEntry(p.code, p.client, s.bigContainerKg);
 
         const unit = unitForName(p.name);
+        const nm = itemNameForQuote(q, p.code, p.name);   // 品名の前にライン名を付ける（同じ品番の行があればその品名に合わせる）
         if(isHardener(p)){
           const cap = Number(p.specialKg) || 4;
           const hasOwnPrice = hasRecordedPrice(p.specialPrice);
-          const item = { code:p.code, name:p.name, capacity:cap, unit, unitPrice: hasOwnPrice ? p.specialPrice : 0, note: p.note || "(国内缶)" };
+          const item = { code:p.code, name:nm, capacity:cap, unit, unitPrice: hasOwnPrice ? p.specialPrice : 0, note: p.note || "(国内缶)" };
           if(!hasOwnPrice) item.priceWarning = true;
           const items = [item];
           if(cap===4){
             const already1kg = q.items.some(x=>x.code===p.code && Number(x.capacity)===1);
             if(!already1kg){
               const cands = findHardener1kgCandidates(p);
-              if(cands.length) items.push({ code:p.code, name:p.name, capacity:1, unit, unitPrice:0, note:p.note||"(国内缶)", calcCandidates:cands });
+              if(cands.length) items.push({ code:p.code, name:nm, capacity:1, unit, unitPrice:0, note:p.note||"(国内缶)", calcCandidates:cands });
             }
           } else if(cap===1 && !hasOwnPrice){
             const cands = findHardener1kgCandidates(p);
@@ -4845,11 +4898,11 @@ const ViewEditor = {
           const smallMatch = (ownSpecial && Number(p.specialKg)===s.smallContainerKg) ? p : findSpecialPriceEntry(p.code, p.client, s.smallContainerKg);
           const bigMatch = (ownSpecial && Number(p.specialKg)===s.bigContainerKg) ? p : findSpecialPriceEntry(p.code, p.client, s.bigContainerKg);
           const baseItem = baseMatch
-            ? { code:p.code, name:p.name, capacity:s.baseContainerKg, unit, unitPrice:baseMatch.specialPrice, note:"(国内缶)" }
-            : { code:p.code, name:p.name, capacity:s.baseContainerKg, unit, unitPrice:0, note:"(国内缶)", priceWarning:true };
+            ? { code:p.code, name:nm, capacity:s.baseContainerKg, unit, unitPrice:baseMatch.specialPrice, note:"(国内缶)" }
+            : { code:p.code, name:nm, capacity:s.baseContainerKg, unit, unitPrice:0, note:"(国内缶)", priceWarning:true };
           const smallItem = smallMatch
-            ? { code:p.code, name:p.name, capacity:s.smallContainerKg, unit, unitPrice:smallMatch.specialPrice, note:"(国内缶)" }
-            : { code:p.code, name:p.name, capacity:s.smallContainerKg, unit, unitPrice:0, note:"(国内缶)", priceWarning:true };
+            ? { code:p.code, name:nm, capacity:s.smallContainerKg, unit, unitPrice:smallMatch.specialPrice, note:"(国内缶)" }
+            : { code:p.code, name:nm, capacity:s.smallContainerKg, unit, unitPrice:0, note:"(国内缶)", priceWarning:true };
           if(!smallMatch && baseMatch){
             smallItem.calcCandidate = roundUp10((baseMatch.specialPrice / s.baseContainerKg) * (s.smallContainerKg + s.smallAddKg) + s.smallAddFee);
             smallItem.calcCandidateLabel = `${s.baseContainerKg}KG特価より算出`;
@@ -4861,8 +4914,8 @@ const ViewEditor = {
           addBigDerivedCandidates(baseItem, smallItem, baseMatch, smallMatch, bigMatch, p, s);
           const bigConds = bigMatch ? [] : findConditionalPriceCandidates(p.code, p.client, s.bigContainerKg, false);
           const bigItem = bigMatch
-            ? { code:p.code, name:p.name, capacity:s.bigContainerKg, unit, unitPrice:bigMatch.specialPrice, note:"(国内缶)" }
-            : bigConds.length ? { code:p.code, name:p.name, capacity:s.bigContainerKg, unit, unitPrice:0, note:"(国内缶)", priceWarning:true } : null;
+            ? { code:p.code, name:nm, capacity:s.bigContainerKg, unit, unitPrice:bigMatch.specialPrice, note:"(国内缶)" }
+            : bigConds.length ? { code:p.code, name:nm, capacity:s.bigContainerKg, unit, unitPrice:0, note:"(国内缶)", priceWarning:true } : null;
           if(isThinnerProduct(p)){
             [[baseItem,s.baseContainerKg],[smallItem,s.smallContainerKg],[bigItem,s.bigContainerKg]].forEach(([it,cap])=>{
               if(!it) return;
@@ -4872,7 +4925,7 @@ const ViewEditor = {
           }
           [[baseItem,s.baseContainerKg],[smallItem,s.smallContainerKg],[bigItem,s.bigContainerKg]].forEach(([it,cap])=> this.addConditionalCandidates(it, p, cap));
           if(ownSpecial && Number(p.specialKg)!==s.baseContainerKg && Number(p.specialKg)!==s.smallContainerKg && Number(p.specialKg)!==s.bigContainerKg){
-            q.items.push({ code:p.code, name:p.name, capacity:p.specialKg, unit, unitPrice:p.specialPrice, note:"(国内缶)" });
+            q.items.push({ code:p.code, name:nm, capacity:p.specialKg, unit, unitPrice:p.specialPrice, note:"(国内缶)" });
           }
           q.items.push(baseItem, smallItem);
           if(bigItem) q.items.push(bigItem);
@@ -4882,8 +4935,8 @@ const ViewEditor = {
           if(baseItem.priceWarning || smallItem.priceWarning) toast("特価が未登録の容量があります（赤色のセルをご確認ください）", true);
           else toast(`「${p.code}」の特価を反映しました`);
         } else {
-          const costBaseItem = { code:p.code, name:p.name, capacity:s.baseContainerKg, unit, unitPrice:0, note:"(国内缶)", priceWarning:true };
-          const costSmallItem = { code:p.code, name:p.name, capacity:s.smallContainerKg, unit, unitPrice:0, note:"(国内缶)", priceWarning:true };
+          const costBaseItem = { code:p.code, name:nm, capacity:s.baseContainerKg, unit, unitPrice:0, note:"(国内缶)", priceWarning:true };
+          const costSmallItem = { code:p.code, name:nm, capacity:s.smallContainerKg, unit, unitPrice:0, note:"(国内缶)", priceWarning:true };
           if(isThinnerProduct(p)){
             [[costBaseItem,s.baseContainerKg],[costSmallItem,s.smallContainerKg]].forEach(([it,cap])=>{
               const cands = findSimilarClientPriceCandidates(p.code, cap, p.client);
@@ -4896,7 +4949,7 @@ const ViewEditor = {
           q.items.push(costSmallItem);
           // 18kgは条件別の価格が登録されている時だけ追加する
           if(findConditionalPriceCandidates(p.code, p.client, s.bigContainerKg, false).length){
-            const costBigItem = { code:p.code, name:p.name, capacity:s.bigContainerKg, unit, unitPrice:0, note:"(国内缶)", priceWarning:true };
+            const costBigItem = { code:p.code, name:nm, capacity:s.bigContainerKg, unit, unitPrice:0, note:"(国内缶)", priceWarning:true };
             this.addConditionalCandidates(costBigItem, p, s.bigContainerKg);
             q.items.push(costBigItem);
           }

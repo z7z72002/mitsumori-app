@@ -546,7 +546,28 @@ const Store = {
   async save(){
     // 読むだけのPCは商品データファイルに書かない（共有ファイルを古いデータで上書きしないため）
     if(this.productFileActive && this.productFileHandle && isProductFileWriter()){
-      try{ await writeProductsToFile(this.productFileHandle, this.data.products); }
+      // 保存が続けて走っても、ファイルの確認と書き込みは1回ずつ順番に行う（自分の書き込みを「ほかの所の更新」と取り違えない）
+      const prev = this._productWriteChain || Promise.resolve();
+      let done;
+      this._productWriteChain = new Promise(r => { done = r; });
+      await prev;
+      try{
+        // 待っている間に連携を解除した・読むだけに戻した時は書かない
+        if(this.productFileActive && this.productFileHandle && isProductFileWriter()){
+          const handle = this.productFileHandle;
+          // 前に読んだ後にほかの所（別のPC・見積スキルなど）でファイルが更新されていたら、古い一覧で上書きせずに読み直す
+          const changed = this.productFileLastModified != null ? await readProductFileIfChanged(handle, this.productFileLastModified) : null;
+          if(changed){
+            this.data.products = changed.products;
+            this.productFileLastModified = changed.lastModified;
+            toast("商品データファイルがほかの所で更新されていたため、上書きせずに読み直しました。取込んだ直後の場合は、もう一度取込んでください", true);
+            if(typeof App !== "undefined" && App.view === "products") App.render();
+          }else{
+            await writeProductsToFile(handle, this.data.products);
+            try{ this.productFileLastModified = (await handle.getFile()).lastModified; }catch(e){}
+          }
+        }
+      }
       catch(e){
         console.error("product file save failed", e);
         // ファイルへの書き込みに失敗した場合、products を localStorage から除外したままにすると
@@ -558,6 +579,7 @@ const Store = {
         toast("商品データファイルへの保存に失敗しました。ファイルとの連携が切れたため、いったんブラウザ内に保存します。「今すぐ再連携」から接続し直してください", true);
         if(typeof App !== "undefined" && App.view === "products") App.render();
       }
+      finally{ done(); }
     }
     try{
       const payload = this.productFileActive ? Object.assign({}, this.data, { products: [] }) : this.data;
@@ -1684,18 +1706,40 @@ const App = {
   async reloadProductFileIfChanged(){
     if(!isProductFileReadOnly() || !Store.productFileHandle || this._productReloadRunning) return;
     this._productReloadRunning = true;
+    const handle = Store.productFileHandle;
     try{
-      const r = await readProductFileIfChanged(Store.productFileHandle, Store.productFileLastModified);
-      if(!r) return;
+      const r = await readProductFileIfChanged(handle, Store.productFileLastModified);
+      // 読んでいる間に別のファイルへ切り替えた・連携を解除した・更新するPCにした時は、読んだ内容を捨てる
+      if(!r || Store.productFileHandle !== handle || !isProductFileReadOnly()) return;
       Store.productFileLastModified = r.lastModified;
       Store.data.products = r.products;
       toast(`商品データが新しくなりました（${r.products.length.toLocaleString()}件）`);
-      if(this.view === "products") this.render();
+      // 検索欄に入力中なら、描き直すと入力が途切れるので次の操作まで待つ（データは更新済み）
+      const typing = document.activeElement && /^product-search-/.test(document.activeElement.id || "");
+      if(this.view === "products" && !typing) this.render();
     }catch(e){
       console.error("product file reload failed", e);   // 次の確認でもう一度読む
     }finally{
       this._productReloadRunning = false;
     }
+  },
+
+  // 「更新するPC」に切り替える（パスワード入力の後）。編集の許可を得てから、最新のファイルを読み直し、
+  // その後で書き込みを有効にして特価マスタの自動更新を確かめる。許可が得られなければ読むだけのまま。
+  async enableProductFileWriter(){
+    const handle = Store.productFileHandle;
+    if(handle){
+      let ok = false;
+      try{ ok = await ensureFilePermission(handle, "readwrite"); }catch(e){ ok = false; }
+      if(!ok) return false;
+      const r = await readProductFileIfChanged(handle, Store.productFileLastModified);
+      if(r){ Store.data.products = r.products; Store.productFileLastModified = r.lastModified; }
+    }
+    setProductFileWriter(true);
+    const dir = ViewProducts.masterFolderHandle;
+    if(dir && !(await queryReadPermissionSilent(dir))) this.armMasterFolderPermission();
+    else await this.maybeRunMasterSync();
+    return true;
   },
 
   // 商品データファイルと連携済みで、特価マスタのフォルダに読み取り許可がある時だけ自動更新を確認する
@@ -3196,15 +3240,18 @@ const ViewProducts = {
     const writerBtn = document.getElementById("btn-product-file-writer");
     if(writerBtn) writerBtn.addEventListener("click", ()=>{
       promptEditUnlock("このPCで商品データを更新する", async ()=>{
-        setProductFileWriter(true);
-        const handle = Store.productFileHandle;
         try{
-          if(handle && !(await ensureFilePermission(handle, "readwrite"))){
-            toast("商品データファイルの編集が許可されませんでした。保存の時にもう一度確認します", true);
+          if(!(await App.enableProductFileWriter())){
+            toast("商品データファイルの編集が許可されなかったため、読むだけのままです。もう一度お試しください", true);
+            return;
           }
-        }catch(e){ /* 許可の確認ができなくても、保存の時に書き込みを試す */ }
-        App.render();
-        toast("このPCを「更新するPC」にしました。特価マスタの取込・自動更新ができます");
+          App.render();
+          toast("このPCを「更新するPC」にしました。特価マスタの取込・自動更新ができます");
+        }catch(e){
+          setProductFileWriter(false);
+          App.render();
+          toast("更新するPCに切り替えられませんでした：" + e.message, true);
+        }
       });
     });
     const readonlyBtn = document.getElementById("btn-product-file-readonly");
@@ -3213,6 +3260,7 @@ const ViewProducts = {
       setProductFileWriter(false);
       App.render();
       toast("このPCを「読むだけ」に戻しました");
+      App.reloadProductFileIfChanged();
     });
 
     const masterFileInput = document.getElementById("master-file-import");

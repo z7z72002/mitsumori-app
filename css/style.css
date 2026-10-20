@@ -340,6 +340,10 @@ table.grid tbody tr:hover{ background:#fafbfc; }
 .item-edit-table select.kg-filter:hover{ background:#f7f8fa; }
 .item-edit-table select.kg-filter:focus{ border-color:var(--color-primary); }
 .quote-hit{ margin:2px 0 0; font-size:12px; color:#2457c5; }   /* 見積書一覧の検索：2つ目以降の品目で一致した品番 */
+/* 商品データファイル：読むだけ／更新するPC の印 */
+.file-mode-badge{ display:inline-block; border-radius:10px; padding:1px 8px; font-size:12px; font-weight:600; }
+.file-mode-badge.readonly{ background:#eef3fb; color:#2457c5; }
+.file-mode-badge.writer{ background:#e9f6ee; color:#1e7a46; }
 .product-toolbar{ display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; flex-wrap:wrap; gap:10px; }
 .product-toolbar.align-left{ justify-content:flex-start; }   /* 特価/原価管理リスト：検索欄を左に並べる（2026-10-19） */
 .file-drop{ border:2px dashed var(--color-border-strong); border-radius:var(--radius); padding:26px; text-align:center; color:var(--color-text-sub); font-size:13px; }

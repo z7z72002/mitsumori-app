@@ -4089,7 +4089,7 @@ function renderQuoteSheetHTML(quote, settings){
       </table>
       <div class="qs-remarks">
         <div><span class="r-title">摘要：</span>${escapeHtml(quote.remarks||"")}</div>
-        <div>${quote.toningEnabled===false ? "調色料の請求は御座いません" : escapeHtml(quote.toning||"")}</div>
+        <div>${quote.toningEnabled===false ? "今回は調色料の請求は御座いません" : escapeHtml(quote.toning||"")}</div>
         <div>～運賃について～</div>
         ${(quote.freightNotes||[]).map(n=>`<div>${escapeHtml(n)}</div>`).join("")}
       </div>
@@ -4433,7 +4433,7 @@ function addQuoteWorksheet(wb, quote, settings){
   // 摘要・調色料・運賃
   let rr = lastRow + 2;
   const remarks = [`摘要：${quote.remarks || ""}`,
-                   quote.toningEnabled === false ? "調色料の請求は御座いません" : (quote.toning || ""),
+                   quote.toningEnabled === false ? "今回は調色料の請求は御座いません" : (quote.toning || ""),
                    "～運賃について～", ...(quote.freightNotes || [])];
   remarks.forEach(text=>{
     xlMerge(ws, rr, 1, rr, 5);

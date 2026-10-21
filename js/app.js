@@ -2397,6 +2397,8 @@ function analyzeQuoteMail(mail){
       if(!it){
         it = { code, name: f.product ? f.product.name : (found.length === 1 ? writtenName : ""), registered: !!f.product, kgs: [], un: lineUn, explicitKgs: false, each: lineEach };
         items.push(it);
+      } else if(!it.registered && !it.name && found.length === 1){
+        it.name = writtenName;   // 前の行では品番が複数で品名が分からなかった時、品名の書いてある行から入れる
       }
       const kgs = f.kg ? [f.kg] : lineKgs;
       if(kgs.length){ it.explicitKgs = true; kgs.forEach(k=>{ if(!it.kgs.includes(k)) it.kgs.push(k); }); }
@@ -2476,16 +2478,11 @@ function resolveCodeCheck(q, requestedCode, chosenCode){
 }
 
 /* 「メールから作成」の品番要確認（2026-10-21） */
-// 特価/原価管理リストの本体品番ごとの {code,name}（同じ商品データなら1回だけ作る）
-const _mailEntriesCache = new WeakMap();
+// 特価/原価管理リストの本体品番ごとの {code,name}。取込（マージ）で配列がそのまま書き換わるので、使い回さず毎回作る
 function productCodeEntries(products){
-  const list = products || [];
-  if(_mailEntriesCache.has(list)) return _mailEntriesCache.get(list);
   const seen = new Map();
-  for(const p of list){ const c = String(p.code||"").trim(); if(c && !seen.has(c)) seen.set(c, { code: c, name: p.name || "" }); }
-  const entries = [...seen.values()];
-  _mailEntriesCache.set(list, entries);
-  return entries;
+  for(const p of (products || [])){ const c = String(p.code||"").trim(); if(c && !seen.has(c)) seen.set(c, { code: c, name: p.name || "" }); }
+  return [...seen.values()];
 }
 // 登録に無い品番に、品名が一致・ほぼ一致する製品があれば codeCheck を返す（無ければ null＝新規品番の可能性）
 function mailCodeCheckFor(code, name){
@@ -2505,7 +2502,7 @@ function mailItemsForQuote(resultItems, client){
   const items = [];
   (resultItems||[]).filter(it=> it.checked && it.kgs.length).forEach(it=>{
     if(it.codeCheck){
-      it.kgs.slice().sort((a, b)=> b - a).forEach(kg=> items.push({ code: it.code, name: it.name || "", capacity: kg, unit: unitForName(it.name || ""),
+      it.kgs.slice().sort((a, b)=> b - a).forEach(kg=> items.push({ code: it.code, name: lineNamePrefixed(it.code, it.name || ""), capacity: kg, unit: unitForName(it.name || ""),
         unitPrice: 0, note: it.un ? "(UN缶)" : "(国内缶)", priceWarning: true, codeCheck: it.codeCheck }));
     } else items.push(...buildQuoteItemsFromMail(it.code, it.name, client, it.kgs, it.un));
   });

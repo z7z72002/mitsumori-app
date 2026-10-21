@@ -696,6 +696,95 @@ function matchLineCode(productCode, lineCodes){
   return best;
 }
 // 品名の前にライン名（指数・最低価格のライン名。例 EC-GPX79-14908 → 「ｴｺﾊｲｳﾚｯｸｽP ｸﾞﾗﾝﾃﾞﾎﾞｰﾙ GOLD IT」）を付ける（2026-10-19 平井さんの指示）。
+/* ---------- 品番が誤っている時の品番候補（2026-10-21）。アプリと見積スキル（quote_tool.js）で共用 ---------- */
+// 比べるための文字：全角半角・大文字小文字・「GB #3」の空白の違いを無くす
+function codeNorm(s){ return String(s||"").normalize("NFKC").toUpperCase().replace(/\s+/g, " ").replace(/\s*#\s*/g, "#").trim(); }
+// ライン名（長い順）。同じ lineCodes の配列なら1回だけ作る（2万件の照合で毎回作り直さない）
+const _codeLineNamesCache = new WeakMap();
+function codeLineNames(lineCodes){
+  const lcs = lineCodes || [];
+  if(typeof lcs === "object" && _codeLineNamesCache.has(lcs)) return _codeLineNamesCache.get(lcs);
+  const names = lcs.map(lc=> codeNorm(lc.name)).filter(Boolean).sort((a, b)=> b.length - a.length);
+  if(typeof lcs === "object") _codeLineNamesCache.set(lcs, names);
+  return names;
+}
+// 比べるための品名：codeNorm したうえで、先頭のライン名（ハイウレックスP 等）を外す
+function codeNameKey(name, lineCodes){
+  let s = codeNorm(name);
+  for(const ln of codeLineNames(lineCodes)){
+    if(s === ln){ s = ""; break; }
+    if(s.startsWith(ln + " ")){ s = s.slice(ln.length + 1).trim(); break; }
+  }
+  return s;
+}
+// 品名の点（比べる用の品名どうし）：完全一致100、語の重なり（お客様側の語の70%以上かつ2語以上）60、それ以外0
+function codeNameKeyScore(a, b){
+  if(!a || !b) return 0;
+  if(a.replace(/ /g, "") === b.replace(/ /g, "")) return 100;
+  const ta = a.split(" "), tb = new Set(b.split(" "));
+  const hit = ta.filter(w=> tb.has(w)).length;
+  return (hit >= 2 && hit / ta.length >= 0.7) ? 60 : 0;
+}
+function codeNameScore(reqName, entryName, lineCodes){
+  return codeNameKeyScore(codeNameKey(reqName, lineCodes), codeNameKey(entryName, lineCodes));
+}
+// 品番の点：書き方違い（記号・空白の違い、または「-」で区切った末尾の一致＝先頭の EC- 等の省略。2区切り以上）80、
+// 同じ系統（最後の「-」まで）で末尾の文字1文字違い40・2文字違い20
+function codeCodeScore(reqCode, entryCode){
+  const ra = codeNorm(reqCode), ea = codeNorm(entryCode);
+  const k = s=> s.replace(/[^0-9A-Z]/g, "");
+  const rk = k(ra), ek = k(ea);
+  if(!rk || !ek) return null;
+  if(rk === ek) return { score: 80, reason: "品番の書き方違い" };
+  const segs = s=> s.split(/[-\s]+/).map(k).filter(Boolean);
+  const rs = segs(ra), es = segs(ea);
+  const tailMatch = (x, y)=> x.length >= 2 && y.length > x.length && y.slice(y.length - x.length).join("-") === x.join("-");
+  if(tailMatch(rs, es) || tailMatch(es, rs)) return { score: 80, reason: "品番の書き方違い" };
+  const ri = ra.lastIndexOf("-"), ei = ea.lastIndexOf("-");
+  if(ri < 0 || ei < 0 || ra.slice(0, ri) !== ea.slice(0, ei)) return null;
+  const rr = ra.slice(ri + 1), er = ea.slice(ei + 1);
+  if(rr.length !== er.length) return null;
+  let diff = 0;
+  for(let i = 0; i < rr.length; i++) if(rr[i] !== er[i]) diff++;
+  if(diff === 1) return { score: 40, reason: "品番が1文字違い" };
+  if(diff === 2) return { score: 20, reason: "品番が2文字違い" };
+  return null;
+}
+// 登録側の比べる用の品名。同じ entries の配列なら1回だけ作る（見積スキルが複数の品番を続けて照合する時に使い回す）
+const _codeEntryKeyCache = new WeakMap();
+function codeEntryKeys(entries, lineCodes){
+  const hit = _codeEntryKeyCache.get(entries);
+  if(hit && hit.lineCodes === lineCodes) return hit.keys;
+  const keys = entries.map(e=> ({ code: codeNorm(e.code), name: codeNameKey(e.name, lineCodes) }));
+  _codeEntryKeyCache.set(entries, { lineCodes, keys });
+  return keys;
+}
+// お客様の品番・品名から、登録の品番（entries：本体品番ごとに {code,name}）の候補を点数順に最大5件。
+// お客様の品番と同じ品番は含めない（登録ありの判定は呼ぶ側で行う）。
+// 1語だけの品名（「ブラック」等）の一致は、品番も近い時だけ点にする（同名の製品が多く、品名だけでは決め手にならない）
+function rankCodeCandidates(reqCode, reqName, entries, lineCodes){
+  const list = entries || [];
+  const keys = codeEntryKeys(list, lineCodes);
+  const same = codeNorm(reqCode);
+  const reqKey = codeNameKey(reqName, lineCodes);
+  const oneWord = reqKey.split(" ").filter(Boolean).length < 2;
+  const out = [];
+  for(let i = 0; i < list.length; i++){
+    const e = list[i], ek = keys[i];
+    if(ek.code === same) continue;
+    const cs = codeCodeScore(reqCode, e.code);
+    let ns = codeNameKeyScore(reqKey, ek.name);
+    if(ns && oneWord && !cs) ns = 0;
+    const reasons = [];
+    if(ns === 100) reasons.push("品名が一致"); else if(ns === 60) reasons.push("品名がほぼ一致");
+    let score = ns;
+    if(cs){ score += cs.score; reasons.push(cs.reason); }
+    if(score > 0) out.push({ code: e.code, name: e.name, score, reasons, _cs: cs ? cs.score : 0 });
+  }
+  out.sort((a, b)=> (b.score - a.score) || (b._cs - a._cs) || (a.code < b.code ? -1 : a.code > b.code ? 1 : 0));
+  return out.slice(0, 5).map(({ _cs, ...c })=> c);
+}
+
 // 品目を新しく作る時だけ使う（今ある見積書の品目は変えない）。すでにライン名で始まる品名（改行・全角半角の違いは無視）には付けない
 // lineCodes を省くとアプリのラインコード（指数・最低価格）を使う。見積スキル（quote_tool.js）は既定のラインコードを渡す
 function lineNamePrefixed(code, name, lineCodes){
@@ -2334,6 +2423,49 @@ function analyzeQuoteMail(mail){
   if(!items.length) notes.push("品番が見つかりませんでした。品番が登録済みか、本文の書き方を確認してください。");
   if(items.some(it=>!it.registered)) notes.push("未登録の品番があります（新規品番の可能性）。必要ならチェックして追加し、単価を手入力してください。");
   return { clients, client, person, un: globalUn && !globalDomestic, items, notes, defaultKgs };
+}
+
+/* ---------- 品番の確認（見積スキルが品番候補を付けて送った品目。2026-10-21） ----------
+   item.codeCheck = { requestedCode, requestedName, status, candidates:[{code,name,reasons}] } */
+// お客様記載の品番ごとに、該当する行の位置をまとめる（最初の行の位置の順）
+function codeCheckGroups(items){
+  const groups = [];
+  (items||[]).forEach((it, i)=>{
+    if(!it.codeCheck) return;
+    const key = it.codeCheck.requestedCode;
+    let g = groups.find(x=> x.requestedCode === key);
+    if(!g){ g = { requestedCode: key, indexes: [], codeCheck: it.codeCheck }; groups.push(g); }
+    g.indexes.push(i);
+  });
+  return groups;
+}
+function codeCheckHtml(group, q){
+  const cc = group.codeCheck;
+  const kgs = group.indexes.map(i=> `${escapeHtml(String(q.items[i].capacity))}kg`).join("・");
+  const own = (cc.candidates||[]).find(c=> c.code === cc.requestedCode);
+  const why = own ? `（登録の品名は「${escapeHtml(own.name)}」です）` : "（この品番は登録がありません）";
+  const opts = (cc.candidates||[]).map((c, n)=>
+    `<option value="${escapeHtml(c.code)}">${n+1}位　${escapeHtml(c.code)}　${escapeHtml(c.name)}　（${escapeHtml((c.reasons||[]).join("・"))}）</option>`).join("");
+  return `<div class="code-check-box">
+      <div class="code-check-title">⚠ 品番の確認（${group.indexes.length}行：${kgs}）</div>
+      <div>お客様記載：<b>${escapeHtml(cc.requestedCode)}</b>　${escapeHtml(cc.requestedName||"")}　<span class="code-check-why">${why}</span></div>
+      <div class="code-check-pick">品番候補：<select data-act="code-check-select" data-code="${escapeHtml(cc.requestedCode)}">${opts}<option value="">どれでもない（お客様記載のまま・新規品番として扱う）</option></select>
+        <button type="button" class="btn primary" data-act="code-check-apply" data-code="${escapeHtml(cc.requestedCode)}">この品番にする</button></div>
+    </div>`;
+}
+// chosenCode の品番で該当行を同じ位置に作り直す（容量・UN缶はその行のまま）。null なら codeCheck だけ消す
+function resolveCodeCheck(q, requestedCode, chosenCode){
+  q.items = q.items.map(it=>{
+    if(!it.codeCheck || it.codeCheck.requestedCode !== requestedCode) return it;
+    if(!chosenCode){ const kept = Object.assign({}, it); delete kept.codeCheck; return kept; }
+    const cand = (it.codeCheck.candidates||[]).find(c=> c.code === chosenCode);
+    const note = String(it.note || "");
+    const un = note.includes("(UN缶)");
+    const rebuilt = buildQuoteItemsFromMail(chosenCode, cand ? cand.name : "", q.customerCompany || "", [Number(it.capacity)], un)[0];
+    // 手で書き足した備考（既定の (国内缶)・(UN缶)・空 以外）は残す
+    if(note.trim() && note.trim() !== "(国内缶)" && note.trim() !== "(UN缶)") rebuilt.note = note;
+    return rebuilt;
+  });
 }
 
 /* 読み取った1品番を見積書の品目にする（単価は特価/原価管理リストから。無ければ0円＋価格候補） */
@@ -4397,10 +4529,13 @@ const ViewEditor = {
     const officeOptions = s.offices.map((o,i)=>
       `<option value="${i}" ${q.officeIndex===i?"selected":""}>${escapeHtml(o.name)}</option>`).join("");
 
+    // 品番の確認欄：同じお客様記載の品番の最初の行の上に1つだけ（検印済みは出さない）
+    const ccFirst = {};
+    if(!locked) codeCheckGroups(q.items).forEach(g=>{ ccFirst[g.indexes[0]] = g; });
     const itemRows = q.items.map((it,i)=>{
       const hasBigAlready = q.items.some(x=> x.code===it.code && Number(x.capacity)===s.bigContainerKg);
       const showBigMark = !locked && Number(it.capacity)===s.baseContainerKg && Number(it.unitPrice)>0 && !hasBigAlready;
-      return `
+      return `${ccFirst[i] ? `<tr class="code-check-row"><td colspan="7">${codeCheckHtml(ccFirst[i], q)}</td></tr>` : ""}
       <tr data-i="${i}">
         <td>
           <textarea rows="2" data-f="code" ${locked?"disabled":""}>${escapeHtml(it.code)}</textarea>
@@ -4734,6 +4869,18 @@ const ViewEditor = {
     document.getElementById("f-office").addEventListener("change", (e)=>{
       q.officeIndex = Number(e.target.value);
       this.touch(q); this.updatePreview();
+    });
+
+    // 品番の確認欄：「この品番にする」で選んだ品番に作り直す（「どれでもない」はお客様記載のまま）
+    document.querySelectorAll('#item-rows [data-act="code-check-apply"]').forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const sel = btn.parentElement.querySelector('select[data-act="code-check-select"]');
+        const chosen = sel ? sel.value : "";
+        resolveCodeCheck(q, btn.dataset.code, chosen || null);
+        this.touch(q);
+        App.render();
+        toast(chosen ? `品番を ${chosen} にしました` : "お客様記載の品番のままにしました");
+      });
     });
 
     // 品目テーブル

@@ -22,11 +22,11 @@ const plain = v => JSON.parse(JSON.stringify(v));
 const item = (code, kg, cost) => ({ code, name: "テスト", capacity: kg, unit: "Kg", unitPrice: 0, note: "(国内缶)", manualCostPerKg: cost });
 const quote = items => ({ id: "q1", date: "2026-10-21", customerCompany: "サンプル塗装株式会社", customerPerson: "山田", items, seals: [null, null, null], trialSheetNote: "" });
 
-test("指数の5段：推奨指数がある時は推奨を真ん中に±0.05・±0.10（0.9 → 0.80〜1.00、0.80 は 28,010円）", () => {
+test("指数の段：推奨指数がある時は推奨を真ん中に±0.05・±0.10。1.00以上の段は出さず下にずらして5段（0.9 → 0.75〜0.95、0.80 は 28,010円）", () => {
   const t = loadApp();
   const c = plain(t.calcPriceCandidates(626, t.Store.data.settings, 0.9).base);
-  assert.deepEqual(c.map(x => x.index), [0.8, 0.85, 0.9, 0.95, 1]);
-  assert.equal(c[0].price, 28010);
+  assert.deepEqual(c.map(x => x.index), [0.75, 0.8, 0.85, 0.9, 0.95]);
+  assert.equal(c[1].price, 28010);
   assert.equal(c.filter(x => x.recommended).map(x => x.index)[0], 0.9);
 });
 
@@ -37,12 +37,12 @@ test("指数の5段：推奨指数が無い時は 0.75 を真ん中に（0.65〜
   assert.ok(c.every(x => !x.recommended));
 });
 
-test("新試算表：品番ごとにその品番の5段で計算する（推奨ありの品番は 0.80〜1.00、推奨なしは 0.65〜0.85）", () => {
+test("新試算表：品番ごとにその品番の段で計算する（推奨ありの品番は 0.75〜0.95、推奨なしは 0.65〜0.85）", () => {
   const t = loadApp();
   const g = plain(t.buildTrialSheetGroups(quote([item("SP26-90048(GR33-)", 16, 626), item("SP26-90777", 16, 800)]), t.Store.data.settings));
-  assert.deepEqual(g[0].indices, [0.8, 0.85, 0.9, 0.95, 1]);
-  assert.deepEqual(g[0].rows[0].candidates.map(c => c.index), [0.8, 0.85, 0.9, 0.95, 1]);
-  assert.equal(g[0].rows[0].candidates[0].price, 28010);
+  assert.deepEqual(g[0].indices, [0.75, 0.8, 0.85, 0.9, 0.95]);
+  assert.deepEqual(g[0].rows[0].candidates.map(c => c.index), [0.75, 0.8, 0.85, 0.9, 0.95]);
+  assert.equal(g[0].rows[0].candidates[1].price, 28010);
   assert.deepEqual(g[1].indices, [0.65, 0.7, 0.75, 0.8, 0.85]);
   assert.deepEqual(g[1].rows[0].candidates.map(c => c.index), [0.65, 0.7, 0.75, 0.8, 0.85]);
 });
@@ -51,7 +51,7 @@ test("新試算表（印刷・PDF）：見出しは1つ目の品番の5段。2�
   const t = loadApp();
   const html = t.renderTrialSheetHTML(quote([item("SP26-90048(GR33-)", 16, 626), item("SP26-90777", 16, 800)]), t.Store.data.settings);
   const thead = html.match(/<thead>([\s\S]*?)<\/thead>/)[1];
-  assert.deepEqual([...thead.matchAll(/class="col-idx">([\d.]+)</g)].map(m => m[1]), ["0.80", "0.85", "0.90", "0.95", "1.00"]);
+  assert.deepEqual([...thead.matchAll(/class="col-idx">([\d.]+)</g)].map(m => m[1]), ["0.75", "0.80", "0.85", "0.90", "0.95"]);
   const sub = html.match(/<tr class="ts-subhead">([\s\S]*?)<\/tr>/);
   assert.ok(sub, "2つ目の品番の見出しの行が無い");
   assert.match(sub[1], />指数</);
@@ -82,8 +82,8 @@ test("新試算表（Excel）：見出しは1つ目の品番の5段、2つ目以
   const t = loadApp();
   const f = fakeWorkbook();
   t.addTrialWorksheet(f.wb, quote([item("SP26-90048(GR33-)", 16, 626), item("SP26-90777", 16, 800)]), t.Store.data.settings);
-  assert.deepEqual(f.rowValues(5).slice(8, 13), ["0.80", "0.85", "0.90", "0.95", "1.00"]);
-  assert.equal(f.rowValues(6)[8], 28010);
+  assert.deepEqual(f.rowValues(5).slice(8, 13), ["0.75", "0.80", "0.85", "0.90", "0.95"]);
+  assert.equal(f.rowValues(6)[9], 28010);
   let subRow = 0;
   for (let r = 7; r < 30; r++) if (f.rowValues(r).includes("指数")) { subRow = r; break; }
   assert.ok(subRow, "Excel に2つ目の品番の見出しの行が無い");
@@ -104,12 +104,13 @@ test("推奨指数が 0・空欄・数字でない・小さすぎる（0.05）�
 test("推奨指数が文字の \"0.9\" でも、小数3桁の 0.775 でも、5段になり真ん中に推奨の印が付く", () => {
   const t = loadApp();
   const a = plain(t.calcPriceCandidates(626, t.Store.data.settings, "0.9").base);
-  assert.deepEqual(a.map(x => x.index), [0.8, 0.85, 0.9, 0.95, 1]);
+  assert.deepEqual(a.map(x => x.index), [0.75, 0.8, 0.85, 0.9, 0.95]);
   assert.equal(a.find(x => x.recommended).index, 0.9);
   const b = plain(t.calcPriceCandidates(626, t.Store.data.settings, 0.775).base);
   assert.equal(b.length, 5);
   assert.equal(b.filter(x => x.recommended).length, 1);
   assert.equal(b[2].recommended, true);
+  assert.deepEqual(plain(t.calcPriceCandidates(626, t.Store.data.settings, 0.95).base).map(x => x.index), [0.75, 0.8, 0.85, 0.9, 0.95]);
 });
 
 test("新試算表：推奨指数が 0 のラインの品番も 0.75 を真ん中にした5段で、列がずれない", () => {
@@ -118,4 +119,23 @@ test("新試算表：推奨指数が 0 のラインの品番も 0.75 を真ん�
   const html = t.renderTrialSheetHTML(quote([item("SP26-90048(GR33-)", 16, 626), item("ZZ9-1001", 16, 800)]), t.Store.data.settings);
   const sub = html.match(/<tr class="ts-subhead">([\s\S]*?)<\/tr>/)[1];
   assert.deepEqual([...sub.matchAll(/class="col-idx">([\d.]+)</g)].map(m => m[1]), ["0.65", "0.70", "0.75", "0.80", "0.85"]);
+});
+
+test("推奨 0.9・0.95 の品番も、指数は5段で 1.00 以上は出ない（新試算表の列も5つ、「決定価格」「備考」の位置はそのまま）", () => {
+  const t = loadApp();
+  const html = t.renderTrialSheetHTML(quote([item("SP26-90048(GR33-)", 16, 626)]), t.Store.data.settings);
+  assert.doesNotMatch(html, />1.00</);
+  const f = fakeWorkbook();
+  t.addTrialWorksheet(f.wb, quote([item("SP26-90048(GR33-)", 16, 626)]), t.Store.data.settings);
+  const head = f.rowValues(5);
+  assert.deepEqual(head.slice(8, 13), ["0.75", "0.80", "0.85", "0.90", "0.95"]);
+  assert.equal(head[13], "決定価格");
+  assert.equal(head[14], "備考");
+});
+
+test("見積スキルの自動見積用：推奨指数が無い品番は、5段のいちばん小さい指数（0.65・高めの単価）が先頭", () => {
+  const t = loadApp();
+  const c = plain(t.calcPriceCandidates(626, t.Store.data.settings, null).base);
+  assert.equal(c[0].index, 0.65);
+  assert.equal(c[0].price, 34480);
 });

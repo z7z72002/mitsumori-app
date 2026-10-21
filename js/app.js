@@ -612,11 +612,14 @@ function normalizeRecommendedIndex(v){
   if(!isFinite(c) || c < 0.15) return null;
   return Math.round(c*100)/100;
 }
-// 指数の5段（小さい順）：真ん中は推奨指数、無ければ0.75
+// 指数の5段（小さい順）：真ん中は推奨指数、無ければ0.75。±0.05・±0.10。
+// 1.00以上（利益が出ない）の段は出さず、その分を下にずらしていつも5段にする（推奨0.9 → 0.75〜0.95）（2026-10-21）
+const PRICE_INDEX_STEP_COUNT = 5;
 function priceIndexSteps(recommendedIndex){
   const rec = normalizeRecommendedIndex(recommendedIndex);
   const center = rec != null ? rec : 0.75;
-  return [-2,-1,0,1,2].map(k=> Math.round((center + 0.05*k)*100)/100);
+  const top = Math.min(Math.round((center + 0.10)*100)/100, 0.95);
+  return [4,3,2,1,0].map(k=> Math.round((top - 0.05*k)*100)/100);
 }
 function calcPriceCandidates(costPerKg, settings, recommendedIndex){
   const s = settings;
@@ -4450,10 +4453,11 @@ function addTrialWorksheet(wb, quote, settings){
   });
   // 指数の列は品番ごとの5段（見出しは1つ目の品番、2つ目以降は品番の前に「指数」の見出しの行）
   const headIdx = groups.length ? groups[0].indices : priceIndexSteps(null);
-  const nIdx = 5;
+  const nIdx = PRICE_INDEX_STEP_COUNT;
+  const idxLabels = list=> list.map(v=> Number(v).toFixed(2));
   const COL = { code: 1, name: 2, costType: 3, cost: 4, mfg: 5, cap: 6, gBase: 7, hBase: 8, idx: 9, decided: 9 + nIdx, note: 10 + nIdx };
   const lastCol = COL.note;
-  ws.columns = [16, 22, 13, 10, 10, 7, 11, 11, ...headIdx.map(()=>10), 11, 28].map(w=>({ width: w }));
+  ws.columns = [16, 22, 13, 10, 10, 7, 11, 11, ...Array.from({ length: nIdx }, ()=>10), 11, 28].map(w=>({ width: w }));
   const thin = { style: "thin" }, medium = { style: "medium" };
 
   xlMerge(ws, 1, 1, 1, lastCol);
@@ -4468,7 +4472,7 @@ function addTrialWorksheet(wb, quote, settings){
 
   const headRow = 5;
   const heads = ["品番", "品名", "原価の種類", "k原価", "製造コスト", "入目", "売上原価", `×販管費${Math.round(s.sgaRate * 100)}%`,
-                 ...headIdx.map(v=> Number(v).toFixed(2)), "決定価格", "備考"];
+                 ...idxLabels(headIdx), "決定価格", "備考"];
   heads.forEach((t, k)=> xlCell(ws, headRow, k + 1, t, { h: "center", bold: true, size: 9.5 }));
   ws.getRow(headRow).height = 22;
 
@@ -4477,7 +4481,7 @@ function addTrialWorksheet(wb, quote, settings){
     if(gi > 0){
       xlMerge(ws, r, 1, r, COL.hBase);
       xlCell(ws, r, 1, "指数", { h: "right", bold: true, size: 9.5 });
-      g.indices.forEach((v, k)=> xlCell(ws, r, COL.idx + k, Number(v).toFixed(2), { h: "center", bold: true, size: 9.5 }));
+      idxLabels(g.indices).forEach((v, k)=> xlCell(ws, r, COL.idx + k, v, { h: "center", bold: true, size: 9.5 }));
       ws.getRow(r).height = 18;
       r++;
     }
@@ -4495,10 +4499,10 @@ function addTrialWorksheet(wb, quote, settings){
       xlCell(ws, rowNo, COL.cap, `${row.capacity}kg`, { h: "center", size: 9.5 });
       xlCell(ws, rowNo, COL.gBase, Math.round(row.gBase), { h: "right", numFmt: XL_YEN, size: 9.5 });
       xlCell(ws, rowNo, COL.hBase, Math.round(row.hBase), { h: "right", numFmt: XL_YEN, size: 9.5 });
-      g.indices.forEach((_, k)=>{
+      for(let k = 0; k < g.indices.length; k++){
         const cand = row.candidates ? row.candidates[k] : null;
         xlCell(ws, rowNo, COL.idx + k, cand ? cand.price : "—", { h: cand ? "right" : "center", numFmt: cand ? XL_YEN : undefined, size: 9.5 });
-      });
+      }
       xlCell(ws, rowNo, COL.decided, row.decidedPrice != null ? Number(row.decidedPrice) : "", { h: "right", numFmt: XL_YEN, size: 9.5, bold: true });
     });
     xlMerge(ws, r, COL.code, r + total - 1, COL.code);

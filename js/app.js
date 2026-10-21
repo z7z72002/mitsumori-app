@@ -605,15 +605,30 @@ const Store = {
 };
 
 /* ---------- 価格計算ロジック（新試算表シートの数式を再現） ---------- */
+// 推奨指数を小数2桁にそろえる。空欄・0・数字でない・小さすぎて5段にならない値（0.15未満）は「推奨なし」（null）
+function normalizeRecommendedIndex(v){
+  if(v == null || v === "") return null;
+  const c = Number(v);
+  if(!isFinite(c) || c < 0.15) return null;
+  return Math.round(c*100)/100;
+}
+// 指数の5段（小さい順）：真ん中は推奨指数、無ければ0.75。±0.05・±0.10。
+// 1.00以上（利益が出ない）の段は出さず、その分を下にずらしていつも5段にする（推奨0.9 → 0.75〜0.95）（2026-10-21）
+const PRICE_INDEX_STEP_COUNT = 5;
+function priceIndexSteps(recommendedIndex){
+  const rec = normalizeRecommendedIndex(recommendedIndex);
+  const center = rec != null ? rec : 0.75;
+  const top = Math.min(Math.round((center + 0.10)*100)/100, 0.95);
+  return [4,3,2,1,0].map(k=> Math.round((top - 0.05*k)*100)/100);
+}
 function calcPriceCandidates(costPerKg, settings, recommendedIndex){
   const s = settings;
   const gBase = ((Number(costPerKg)||0) + s.manufacturingCostPerKg) * s.baseContainerKg + s.canFeeBase;
   const hBase = gBase * (1 + s.sgaRate);
-  let indices = s.indices.slice();
-  // 推奨（標準）指数から0.05刻みで5段（価格が高くなる方向）。推奨が無い製品は0.75を起点にする（推奨表示はしない）
-  const centerIndex = recommendedIndex != null ? recommendedIndex : 0.75;
-  indices = [0,1,2,3,4].map(k=>Math.round((centerIndex - 0.05*k)*100)/100).filter(i=>i>0).sort((a,b)=>a-b);
-  const isRecommended = idx => recommendedIndex != null && Math.abs(idx-recommendedIndex) < 1e-9;
+  // 指数は5段：推奨（標準）指数を真ん中に ±0.05・±0.10。推奨が無い製品は0.75を真ん中にする（推奨表示はしない）（2026-10-21）
+  const indices = priceIndexSteps(recommendedIndex);
+  const rec = normalizeRecommendedIndex(recommendedIndex);
+  const isRecommended = idx => rec != null && Math.abs(idx-rec) < 1e-9;
   const baseCandidates = indices.map(idx => ({ index: idx, price: idx > 0 ? roundUp10(hBase/idx) : 0, recommended: isRecommended(idx) }));
   const smallCandidates = baseCandidates.map(c => ({
     index: c.index,
@@ -4105,11 +4120,11 @@ function buildTrialSheetGroups(quote, settings){
     const product = Store.data.products.find(p=>p.code.trim()===code);
     const manualCostItem = groupItems.find(it=>it.manualCostPerKg!==undefined && it.manualCostPerKg!=="");
     const realCost = product ? (Number(product.costPerKg)||0) : (manualCostItem ? (Number(manualCostItem.manualCostPerKg)||0) : 0);
-    // recommendedIndex is intentionally always null here: this sheet lists many
-    // products in one shared table, so every row must have the same number of
-    // index columns (settings.indices.length), not a per-product injected extra column.
-    const candReal = calcPriceCandidates(realCost, s, null);
-    const candZero = calcPriceCandidates(0, s, null);
+    // 指数は品番ごとの5段（推奨指数があれば真ん中に、無ければ0.75）。見出しもこの5段にする（2026-10-21）
+    const lineMatchIdx = matchLineCode(code, Store.data.lineCodes);
+    const recIdx = normalizeRecommendedIndex(lineMatchIdx ? lineMatchIdx.newIndex : null);
+    const candReal = calcPriceCandidates(realCost, s, recIdx);
+    const candZero = calcPriceCandidates(0, s, recIdx);
 
     const presentCaps = [];
     [s.baseContainerKg, s.smallContainerKg, s.bigContainerKg].forEach(c=>{
@@ -4152,6 +4167,7 @@ function buildTrialSheetGroups(quote, settings){
 
     return {
       code, name: first.name,
+      indices: priceIndexSteps(recIdx),
       note: product ? (product.note||"") : (first.note||""),
       refLines,
       recommendedIndexNote: lineMatch ? `${code}：推奨指数 ${lineMatch.newIndex}（${lineMatch.code}／${lineMatch.name}）` : null,
@@ -4167,11 +4183,14 @@ function renderTrialSheetHTML(quote, settings){
   const sgaPct = Math.round(s.sgaRate*100);
   const primarySeal = quote.seals.find(Boolean) || null;
 
-  const idxHeaders = s.indices.map(i=>`<th class="col-idx">${i.toFixed(2)}</th>`).join("");
+  // 指数の見出しは品番ごとの5段。表の見出しは1つ目の品番、2つ目以降は品番の前に見出しの行を入れる
+  const idxTh = list=> list.map(i=>`<th class="col-idx">${i.toFixed(2)}</th>`).join("");
+  const idxHeaders = idxTh(groups.length ? groups[0].indices : priceIndexSteps(null));
 
-  const bodyRows = groups.map(g=>{
+  const bodyRows = groups.map((g, gi)=>{
     const total = g.rows.length;
-    return g.rows.map((r, i)=>{
+    const subHead = gi === 0 ? "" : `<tr class="ts-subhead"><th colspan="8" class="ts-subhead-label">指数</th>${idxTh(g.indices)}<th></th><th></th></tr>`;
+    return subHead + g.rows.map((r, i)=>{
       const cells = [];
       if(i===0){
         cells.push(`<td class="col-code" rowspan="${total}">${nl2br(g.code)}</td>`);
@@ -4188,7 +4207,7 @@ function renderTrialSheetHTML(quote, settings){
       cells.push(`<td class="col-hbase">${yen(r.hBase)}</td>`);
       cells.push(r.candidates
         ? r.candidates.map(c=>`<td class="col-idx">${yen(c.price)}</td>`).join("")
-        : s.indices.map(()=>`<td class="col-idx">—</td>`).join(""));
+        : g.indices.map(()=>`<td class="col-idx">—</td>`).join(""));
       cells.push(`<td class="col-decided">${r.decidedPrice!=null ? yen(r.decidedPrice) : ""}</td>`);
       if(i===0){
         const noteHtml = [g.note, ...g.refLines].filter(Boolean).map(escapeHtml).join("<br>");
@@ -4432,10 +4451,13 @@ function addTrialWorksheet(wb, quote, settings){
     pageSetup: { paperSize: 9, orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0,
                  margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 } }
   });
-  const nIdx = s.indices.length;
+  // 指数の列は品番ごとの5段（見出しは1つ目の品番、2つ目以降は品番の前に「指数」の見出しの行）
+  const headIdx = groups.length ? groups[0].indices : priceIndexSteps(null);
+  const nIdx = PRICE_INDEX_STEP_COUNT;
+  const idxLabels = list=> list.map(v=> Number(v).toFixed(2));
   const COL = { code: 1, name: 2, costType: 3, cost: 4, mfg: 5, cap: 6, gBase: 7, hBase: 8, idx: 9, decided: 9 + nIdx, note: 10 + nIdx };
   const lastCol = COL.note;
-  ws.columns = [16, 22, 13, 10, 10, 7, 11, 11, ...s.indices.map(()=>10), 11, 28].map(w=>({ width: w }));
+  ws.columns = [16, 22, 13, 10, 10, 7, 11, 11, ...Array.from({ length: nIdx }, ()=>10), 11, 28].map(w=>({ width: w }));
   const thin = { style: "thin" }, medium = { style: "medium" };
 
   xlMerge(ws, 1, 1, 1, lastCol);
@@ -4450,12 +4472,19 @@ function addTrialWorksheet(wb, quote, settings){
 
   const headRow = 5;
   const heads = ["品番", "品名", "原価の種類", "k原価", "製造コスト", "入目", "売上原価", `×販管費${Math.round(s.sgaRate * 100)}%`,
-                 ...s.indices.map(v=> Number(v).toFixed(2)), "決定価格", "備考"];
+                 ...idxLabels(headIdx), "決定価格", "備考"];
   heads.forEach((t, k)=> xlCell(ws, headRow, k + 1, t, { h: "center", bold: true, size: 9.5 }));
   ws.getRow(headRow).height = 22;
 
   let r = headRow + 1;
-  groups.forEach(g=>{
+  groups.forEach((g, gi)=>{
+    if(gi > 0){
+      xlMerge(ws, r, 1, r, COL.hBase);
+      xlCell(ws, r, 1, "指数", { h: "right", bold: true, size: 9.5 });
+      idxLabels(g.indices).forEach((v, k)=> xlCell(ws, r, COL.idx + k, v, { h: "center", bold: true, size: 9.5 }));
+      ws.getRow(r).height = 18;
+      r++;
+    }
     const total = g.rows.length;
     const rowHeight = xlItemRowHeight(g.name, total, 22, 18);   // 長い品名（ライン名付きなど）が欠けないよう、行を高くする
     g.rows.forEach((row, i)=>{
@@ -4470,10 +4499,10 @@ function addTrialWorksheet(wb, quote, settings){
       xlCell(ws, rowNo, COL.cap, `${row.capacity}kg`, { h: "center", size: 9.5 });
       xlCell(ws, rowNo, COL.gBase, Math.round(row.gBase), { h: "right", numFmt: XL_YEN, size: 9.5 });
       xlCell(ws, rowNo, COL.hBase, Math.round(row.hBase), { h: "right", numFmt: XL_YEN, size: 9.5 });
-      s.indices.forEach((_, k)=>{
+      for(let k = 0; k < g.indices.length; k++){
         const cand = row.candidates ? row.candidates[k] : null;
         xlCell(ws, rowNo, COL.idx + k, cand ? cand.price : "—", { h: cand ? "right" : "center", numFmt: cand ? XL_YEN : undefined, size: 9.5 });
-      });
+      }
       xlCell(ws, rowNo, COL.decided, row.decidedPrice != null ? Number(row.decidedPrice) : "", { h: "right", numFmt: XL_YEN, size: 9.5, bold: true });
     });
     xlMerge(ws, r, COL.code, r + total - 1, COL.code);

@@ -344,6 +344,13 @@ table.grid tbody tr:hover{ background:#fafbfc; }
 .file-mode-badge{ display:inline-block; border-radius:10px; padding:1px 8px; font-size:12px; font-weight:600; }
 .file-mode-badge.readonly{ background:#eef3fb; color:#2457c5; }
 .file-mode-badge.writer{ background:#e9f6ee; color:#1e7a46; }
+/* 見積書編集：品番の確認（品番が誤っている時の品番候補） */
+.code-check-box{ border:2px solid #E5262D; background:#FDF0F0; border-radius:8px; padding:10px 14px; font-size:13px; line-height:1.7; text-align:left; }
+.code-check-title{ font-weight:700; color:#B3261E; }
+.code-check-why{ color:#B3261E; }
+.code-check-pick{ margin-top:6px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.code-check-pick select{ min-width:min(520px,100%); width:auto; padding:4px 6px; }
+.code-check-pick .btn{ padding:4px 14px; }
 .product-toolbar{ display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; flex-wrap:wrap; gap:10px; }
 .product-toolbar.align-left{ justify-content:flex-start; }   /* 特価/原価管理リスト：検索欄を左に並べる（2026-10-19） */
 .file-drop{ border:2px dashed var(--color-border-strong); border-radius:var(--radius); padding:26px; text-align:center; color:var(--color-text-sub); font-size:13px; }

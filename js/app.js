@@ -2397,6 +2397,8 @@ function analyzeQuoteMail(mail){
       if(!it){
         it = { code, name: f.product ? f.product.name : (found.length === 1 ? writtenName : ""), registered: !!f.product, kgs: [], un: lineUn, explicitKgs: false, each: lineEach };
         items.push(it);
+      } else if(!it.registered && !it.name && found.length === 1){
+        it.name = writtenName;   // 前の行では品番が複数で品名が分からなかった時、品名の書いてある行から入れる
       }
       const kgs = f.kg ? [f.kg] : lineKgs;
       if(kgs.length){ it.explicitKgs = true; kgs.forEach(k=>{ if(!it.kgs.includes(k)) it.kgs.push(k); }); }
@@ -2420,8 +2422,15 @@ function analyzeQuoteMail(mail){
     if(client) notes.push(`取引先「${client}」は特価/原価管理リストに無いため、特価は入りません（署名から読み取り）。`);
   }
   const person = guessMailPerson(newLines, mail.fromName, client);
+  // 登録に無い品番は品名で候補を探す。品名の合う製品があれば品番要確認（見積スキルと同じ決まり。2026-10-21）
+  items.forEach(it=>{
+    if(it.registered) return;
+    const cc = mailCodeCheckFor(it.code, it.name);
+    if(cc){ it.codeCheck = cc; it.checked = true; }
+  });
   if(!items.length) notes.push("品番が見つかりませんでした。品番が登録済みか、本文の書き方を確認してください。");
-  if(items.some(it=>!it.registered)) notes.push("未登録の品番があります（新規品番の可能性）。必要ならチェックして追加し、単価を手入力してください。");
+  if(items.some(it=>it.codeCheck)) notes.push("品番が登録に無く、品名の合う製品があります（品番要確認）。作成後、編集画面で正しい品番を選んでください。");
+  if(items.some(it=>!it.registered && !it.codeCheck)) notes.push("未登録の品番があります（新規品番の可能性）。必要ならチェックして追加し、単価を手入力してください。");
   return { clients, client, person, un: globalUn && !globalDomestic, items, notes, defaultKgs };
 }
 
@@ -2466,6 +2475,38 @@ function resolveCodeCheck(q, requestedCode, chosenCode){
     if(note.trim() && note.trim() !== "(国内缶)" && note.trim() !== "(UN缶)") rebuilt.note = note;
     return rebuilt;
   });
+}
+
+/* 「メールから作成」の品番要確認（2026-10-21） */
+// 特価/原価管理リストの本体品番ごとの {code,name}。取込（マージ）で配列がそのまま書き換わるので、使い回さず毎回作る
+function productCodeEntries(products){
+  const seen = new Map();
+  for(const p of (products || [])){ const c = String(p.code||"").trim(); if(c && !seen.has(c)) seen.set(c, { code: c, name: p.name || "" }); }
+  return [...seen.values()];
+}
+// 登録に無い品番に、品名が一致・ほぼ一致する製品があれば codeCheck を返す（無ければ null＝新規品番の可能性）
+function mailCodeCheckFor(code, name){
+  if(!name) return null;
+  const cands = rankCodeCandidates(code, name, productCodeEntries(Store.data.products), Store.data.lineCodes);
+  if(!cands.some(c=> c.reasons.includes("品名が一致") || c.reasons.includes("品名がほぼ一致"))) return null;
+  return { requestedCode: code, requestedName: name, status: "ambiguous", candidates: cands.map(c=> ({ code: c.code, name: c.name, reasons: c.reasons })) };
+}
+function mailCodeCheckTagHtml(it){
+  const c = it.codeCheck.candidates || [];
+  const top = c[0] ? `${escapeHtml(c[0].code)} ${escapeHtml(c[0].name)}` : "";
+  return `<span class="mi-tag warn code-check-tag">品番要確認（候補 ${top}${c.length > 1 ? ` ほか${c.length - 1}件` : ""}）</span>`
+    + `<div class="hint" style="margin:2px 0 0;">作成後、編集画面の「品番の確認」欄で選びます</div>`;
+}
+// 確認画面でチェックした品目を見積書の品目にする。品番要確認の品目はお客様記載のまま単価0・codeCheck 付き
+function mailItemsForQuote(resultItems, client){
+  const items = [];
+  (resultItems||[]).filter(it=> it.checked && it.kgs.length).forEach(it=>{
+    if(it.codeCheck){
+      it.kgs.slice().sort((a, b)=> b - a).forEach(kg=> items.push({ code: it.code, name: lineNamePrefixed(it.code, it.name || ""), capacity: kg, unit: unitForName(it.name || ""),
+        unitPrice: 0, note: it.un ? "(UN缶)" : "(国内缶)", priceWarning: true, codeCheck: it.codeCheck }));
+    } else items.push(...buildQuoteItemsFromMail(it.code, it.name, client, it.kgs, it.un));
+  });
+  return items;
 }
 
 /* 読み取った1品番を見積書の品目にする（単価は特価/原価管理リストから。無ければ0円＋価格候補） */
@@ -2619,6 +2660,7 @@ const MailImport = {
       render();
     };
     const statusOf = (it, client)=>{
+      if(it.codeCheck) return mailCodeCheckTagHtml(it);
       if(!it.registered) return `<span class="mi-tag warn">未登録（新規品番の可能性）</span>`;
       const tags = it.kgs.map(kg=>{
         const sp = client ? findSpecialPriceEntry(it.code, client, kg) : null;
@@ -2703,10 +2745,7 @@ const MailImport = {
       if(!result) return;
       const client = (body.querySelector("#mi-client") || {}).value ? body.querySelector("#mi-client").value.trim() : result.client;
       const person = (body.querySelector("#mi-person") || {}).value != null ? body.querySelector("#mi-person").value.trim() : result.person;
-      const items = [];
-      result.items.filter(it=>it.checked && it.kgs.length).forEach(it=>{
-        items.push(...buildQuoteItemsFromMail(it.code, it.name, client, it.kgs, it.un));
-      });
+      const items = mailItemsForQuote(result.items, client);
       if(!items.length){ toast("見積書に入れる品目を選んでください", true); return; }
       const now = new Date().toISOString();
       const q = {

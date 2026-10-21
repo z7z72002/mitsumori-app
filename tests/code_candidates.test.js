@@ -16,36 +16,36 @@ function loadApp() {
 }
 const plain = v => JSON.parse(JSON.stringify(v));
 const ENTRIES = [
-  { code: "P79-90828", name: "SAMPLE BLACK P GB #3" },
-  { code: "P79-90534", name: "SAMPLE BLACK P GB#2" },
-  { code: "P79-90623", name: "SAMPLE BLACK P GB" },
-  { code: "AT20-9670", name: "SAMPLE BLACK #3" },
-  { code: "EC-GB31-9146", name: "BLACK" },
-  { code: "EC-P79-90838LE", name: "TEST AS-TD" },
+  { code: "P79-71416", name: "DEMO NAVY Q HX #3" },
+  { code: "P79-71922", name: "DEMO NAVY Q HX#2" },
+  { code: "P79-71011", name: "DEMO NAVY Q HX" },
+  { code: "AT20-5512", name: "DEMO NAVY #3" },
+  { code: "EC-GB31-6603", name: "BLACK" },
+  { code: "EC-P79-71426LE", name: "TEST AS-TD" },
   { code: "EC-GPX79-11097", name: "GOLD IT" },
 ];
 const LC = [{ code: "P79-", name: "ﾊｲｳﾚｯｸｽP" }, { code: "EC-GPX79-", name: "ｴｺﾊｲｳﾚｯｸｽP ｸﾞﾗﾝﾃﾞﾎﾞﾇｰﾙ" }];
-const REQ_NAME = "ハイウレックスP SAMPLE BLACK P GB＃３";
+const REQ_NAME = "ハイウレックスP DEMO NAVY Q HX＃３";
 
-test("品番が1文字違いで品名が一致：P79-90838 の1位は P79-90828（品名が一致・品番が1文字違い、140点）", () => {
+test("品番が1文字違いで品名が一致：P79-71426 の1位は P79-71416（品名が一致・品番が1文字違い、140点）", () => {
   const t = loadApp();
-  const r = plain(t.rankCodeCandidates("P79-90838", REQ_NAME, ENTRIES, LC));
-  assert.equal(r[0].code, "P79-90828");
-  assert.equal(r[0].name, "SAMPLE BLACK P GB #3");
+  const r = plain(t.rankCodeCandidates("P79-71426", REQ_NAME, ENTRIES, LC));
+  assert.equal(r[0].code, "P79-71416");
+  assert.equal(r[0].name, "DEMO NAVY Q HX #3");
   assert.equal(r[0].score, 140);
   assert.deepEqual(r[0].reasons, ["品名が一致", "品番が1文字違い"]);
 });
 
-test("2位 P79-90534（80点）、3位 P79-90623（60点）。BLACK・SAMPLE BLACK #3・TEST AS-TD は候補に出ない", () => {
+test("2位 P79-71922（80点）、3位 P79-71011（60点）。BLACK・DEMO NAVY #3・TEST AS-TD は候補に出ない", () => {
   const t = loadApp();
-  const r = plain(t.rankCodeCandidates("P79-90838", REQ_NAME, ENTRIES, LC));
-  assert.deepEqual(r.map(c => [c.code, c.score]), [["P79-90828", 140], ["P79-90534", 80], ["P79-90623", 60]]);
+  const r = plain(t.rankCodeCandidates("P79-71426", REQ_NAME, ENTRIES, LC));
+  assert.deepEqual(r.map(c => [c.code, c.score]), [["P79-71416", 140], ["P79-71922", 80], ["P79-71011", 60]]);
 });
 
-test("品名が空なら、品番の文字違いだけで候補を出す（P79-90828 が「品番が1文字違い」40点）", () => {
+test("品名が空なら、品番の文字違いだけで候補を出す（P79-71416 が「品番が1文字違い」40点）", () => {
   const t = loadApp();
-  const r = plain(t.rankCodeCandidates("P79-90838", "", ENTRIES, LC));
-  assert.equal(r[0].code, "P79-90828");
+  const r = plain(t.rankCodeCandidates("P79-71426", "", ENTRIES, LC));
+  assert.equal(r[0].code, "P79-71416");
   assert.equal(r[0].score, 40);
   assert.deepEqual(r[0].reasons, ["品番が1文字違い"]);
 });
@@ -59,40 +59,40 @@ test("書き方違い：EC-GPX7911097・GPX79-11097 は EC-GPX79-11097 を「品
   }
 });
 
-test("書き方違いは区切り（-）ごとの末尾一致だけ：P79-90838 は EC-LP79-90838 と一致しない、1区切りだけの品番（9146）は末尾一致にしない", () => {
+test("書き方違いは区切り（-）ごとの末尾一致だけ：P79-71426 は EC-LP79-71426 と一致しない、1区切りだけの品番（9146）は末尾一致にしない", () => {
   const t = loadApp();
-  const e = [{ code: "EC-LP79-90838", name: "OTHER" }, { code: "EC-GB31-9146", name: "BLACK" }, { code: "GM62-9146", name: "X" }];
-  assert.equal(plain(t.rankCodeCandidates("P79-90838", "", e, LC)).filter(c => c.code === "EC-LP79-90838" && c.reasons.includes("品番の書き方違い")).length, 0);
-  assert.equal(plain(t.rankCodeCandidates("9146", "", e, LC)).length, 0);
+  const e = [{ code: "EC-LP79-71426", name: "OTHER" }, { code: "EC-GB31-6603", name: "BLACK" }, { code: "GM62-6603", name: "X" }];
+  assert.equal(plain(t.rankCodeCandidates("P79-71426", "", e, LC)).filter(c => c.code === "EC-LP79-71426" && c.reasons.includes("品番の書き方違い")).length, 0);
+  assert.equal(plain(t.rankCodeCandidates("6603", "", e, LC)).length, 0);
 });
 
 test("半角カナのライン名・半角の#でも、1位は同じ", () => {
   const t = loadApp();
-  const r = plain(t.rankCodeCandidates("P79-90838", "ﾊｲｳﾚｯｸｽP SAMPLE BLACK P GB#3", ENTRIES, LC));
-  assert.equal(r[0].code, "P79-90828");
+  const r = plain(t.rankCodeCandidates("P79-71426", "ﾊｲｳﾚｯｸｽP DEMO NAVY Q HX#3", ENTRIES, LC));
+  assert.equal(r[0].code, "P79-71416");
   assert.equal(r[0].score, 140);
 });
 
 test("codeNameScore：一致100・ほぼ一致60・違う0（ライン名を外して比べる）", () => {
   const t = loadApp();
-  assert.equal(t.codeNameScore(REQ_NAME, "SAMPLE BLACK P GB #3", LC), 100);
-  assert.equal(t.codeNameScore(REQ_NAME, "SAMPLE BLACK P GB#2", LC), 60);
+  assert.equal(t.codeNameScore(REQ_NAME, "DEMO NAVY Q HX #3", LC), 100);
+  assert.equal(t.codeNameScore(REQ_NAME, "DEMO NAVY Q HX#2", LC), 60);
   assert.equal(t.codeNameScore(REQ_NAME, "TEST AS-TD", LC), 0);
   assert.equal(t.codeNameScore(REQ_NAME, "BLACK", LC), 0);
 });
 
 test("1語だけのよくある品名（ブラック）の一致は、品番が近い時だけ候補にする（品番が遠い同名品で上位が埋まらない）", () => {
   const t = loadApp();
-  const e = [{ code: "AA-1111", name: "ブラック" }, { code: "BB-2222", name: "ブラック" }, { code: "P79-90829", name: "ブラック" }, { code: "P79-90820", name: "ホワイト" }];
-  const r = plain(t.rankCodeCandidates("P79-90828", "ブラック", e, LC));
-  assert.deepEqual(r.map(c => c.code), ["P79-90829", "P79-90820"]);
+  const e = [{ code: "AA-1111", name: "ブラック" }, { code: "BB-2222", name: "ブラック" }, { code: "P79-71417", name: "ブラック" }, { code: "P79-71410", name: "ホワイト" }];
+  const r = plain(t.rankCodeCandidates("P79-71416", "ブラック", e, LC));
+  assert.deepEqual(r.map(c => c.code), ["P79-71417", "P79-71410"]);
   assert.deepEqual(r[0].reasons, ["品名が一致", "品番が1文字違い"]);
 });
 
 test("候補は最大5件、点0は含めない", () => {
   const t = loadApp();
-  const many = Array.from({ length: 8 }, (_, i) => ({ code: "P79-9083" + i, name: "X" + i }));
-  const r = plain(t.rankCodeCandidates("P79-90838", "", many, LC));
+  const many = Array.from({ length: 8 }, (_, i) => ({ code: "P79-7142" + i, name: "X" + i }));
+  const r = plain(t.rankCodeCandidates("P79-71426", "", many, LC));
   assert.equal(r.length, 5);
   assert.ok(r.every(c => c.score > 0));
 });

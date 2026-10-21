@@ -319,6 +319,8 @@ table.grid tbody tr:hover{ background:#fafbfc; }
 .ts-table th, .ts-table td{ border:0.8pt solid #000; padding:1mm 1.4mm; text-align:center; vertical-align:middle; }
 .ts-table thead th{ font-weight:700; border-top:1.5pt solid #000; border-bottom:1.5pt solid #000; }
 .ts-table .col-code, .ts-table .col-name{ text-align:left; white-space:pre-line; }
+.ts-table .ts-subhead th{ font-weight:700; border-top:1.2pt solid #000; }   /* 2つ目以降の品番の指数の見出し */
+.ts-table .ts-subhead .ts-subhead-label{ text-align:right; }
 .ts-table .col-cost, .ts-table .col-mfgcost, .ts-table .col-gbase, .ts-table .col-hbase, .ts-table .col-idx, .ts-table .col-decided{ text-align:right; }
 .ts-table .col-decided{ font-weight:700; }
 .ts-table .col-note{ text-align:left; }

@@ -91,3 +91,31 @@ test("新試算表（Excel）：見出しは1つ目の品番の5段、2つ目以
   assert.equal(f.rowValues(subRow + 1)[0], "SP26-90777");
   assert.equal(f.rowValues(subRow + 1)[8], 40040);   // 原価800の16kg・指数0.65
 });
+
+test("推奨指数が 0・空欄・数字でない・小さすぎる（0.05）時は、推奨なしと同じ 0.75 を真ん中にした5段（推奨の印なし）", () => {
+  const t = loadApp();
+  for (const v of [0, "", "abc", 0.05, 0.1]) {
+    const c = plain(t.calcPriceCandidates(626, t.Store.data.settings, v).base);
+    assert.deepEqual(c.map(x => x.index), [0.65, 0.7, 0.75, 0.8, 0.85], String(v));
+    assert.ok(c.every(x => !x.recommended), String(v));
+  }
+});
+
+test("推奨指数が文字の \"0.9\" でも、小数3桁の 0.775 でも、5段になり真ん中に推奨の印が付く", () => {
+  const t = loadApp();
+  const a = plain(t.calcPriceCandidates(626, t.Store.data.settings, "0.9").base);
+  assert.deepEqual(a.map(x => x.index), [0.8, 0.85, 0.9, 0.95, 1]);
+  assert.equal(a.find(x => x.recommended).index, 0.9);
+  const b = plain(t.calcPriceCandidates(626, t.Store.data.settings, 0.775).base);
+  assert.equal(b.length, 5);
+  assert.equal(b.filter(x => x.recommended).length, 1);
+  assert.equal(b[2].recommended, true);
+});
+
+test("新試算表：推奨指数が 0 のラインの品番も 0.75 を真ん中にした5段で、列がずれない", () => {
+  const t = loadApp();
+  t.Store.data.lineCodes.push({ id: "z", code: "ZZ9-", name: "ﾃｽﾄ", newIndex: 0 });
+  const html = t.renderTrialSheetHTML(quote([item("SP26-90048(GR33-)", 16, 626), item("ZZ9-1001", 16, 800)]), t.Store.data.settings);
+  const sub = html.match(/<tr class="ts-subhead">([\s\S]*?)<\/tr>/)[1];
+  assert.deepEqual([...sub.matchAll(/class="col-idx">([\d.]+)</g)].map(m => m[1]), ["0.65", "0.70", "0.75", "0.80", "0.85"]);
+});

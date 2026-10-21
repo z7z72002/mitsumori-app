@@ -605,10 +605,18 @@ const Store = {
 };
 
 /* ---------- 価格計算ロジック（新試算表シートの数式を再現） ---------- */
+// 推奨指数を小数2桁にそろえる。空欄・0・数字でない・小さすぎて5段にならない値（0.15未満）は「推奨なし」（null）
+function normalizeRecommendedIndex(v){
+  if(v == null || v === "") return null;
+  const c = Number(v);
+  if(!isFinite(c) || c < 0.15) return null;
+  return Math.round(c*100)/100;
+}
 // 指数の5段（小さい順）：真ん中は推奨指数、無ければ0.75
 function priceIndexSteps(recommendedIndex){
-  const center = recommendedIndex != null ? Number(recommendedIndex) : 0.75;
-  return [-2,-1,0,1,2].map(k=> Math.round((center + 0.05*k)*100)/100).filter(i=> i > 0);
+  const rec = normalizeRecommendedIndex(recommendedIndex);
+  const center = rec != null ? rec : 0.75;
+  return [-2,-1,0,1,2].map(k=> Math.round((center + 0.05*k)*100)/100);
 }
 function calcPriceCandidates(costPerKg, settings, recommendedIndex){
   const s = settings;
@@ -616,7 +624,8 @@ function calcPriceCandidates(costPerKg, settings, recommendedIndex){
   const hBase = gBase * (1 + s.sgaRate);
   // 指数は5段：推奨（標準）指数を真ん中に ±0.05・±0.10。推奨が無い製品は0.75を真ん中にする（推奨表示はしない）（2026-10-21）
   const indices = priceIndexSteps(recommendedIndex);
-  const isRecommended = idx => recommendedIndex != null && Math.abs(idx-recommendedIndex) < 1e-9;
+  const rec = normalizeRecommendedIndex(recommendedIndex);
+  const isRecommended = idx => rec != null && Math.abs(idx-rec) < 1e-9;
   const baseCandidates = indices.map(idx => ({ index: idx, price: idx > 0 ? roundUp10(hBase/idx) : 0, recommended: isRecommended(idx) }));
   const smallCandidates = baseCandidates.map(c => ({
     index: c.index,
@@ -4110,7 +4119,7 @@ function buildTrialSheetGroups(quote, settings){
     const realCost = product ? (Number(product.costPerKg)||0) : (manualCostItem ? (Number(manualCostItem.manualCostPerKg)||0) : 0);
     // 指数は品番ごとの5段（推奨指数があれば真ん中に、無ければ0.75）。見出しもこの5段にする（2026-10-21）
     const lineMatchIdx = matchLineCode(code, Store.data.lineCodes);
-    const recIdx = lineMatchIdx && lineMatchIdx.newIndex != null && lineMatchIdx.newIndex !== "" ? Number(lineMatchIdx.newIndex) : null;
+    const recIdx = normalizeRecommendedIndex(lineMatchIdx ? lineMatchIdx.newIndex : null);
     const candReal = calcPriceCandidates(realCost, s, recIdx);
     const candZero = calcPriceCandidates(0, s, recIdx);
 
